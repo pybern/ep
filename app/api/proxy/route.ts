@@ -1,8 +1,15 @@
 import { Agent, fetch as undiciFetch } from "undici"
 
+// Create a dispatcher that skips SSL verification - equivalent to Python's verify=False
+const insecureDispatcher = new Agent({
+  connect: {
+    rejectUnauthorized: false,
+  },
+})
+
 export async function POST(req: Request) {
   try {
-    const { url, method, headers, body, timeout, skipSslVerify } = await req.json()
+    const { url, method, headers, body, timeout } = await req.json()
 
     if (!url) {
       return new Response(JSON.stringify({ error: "URL is required" }), {
@@ -25,42 +32,20 @@ export async function POST(req: Request) {
     const timeoutId = setTimeout(() => controller.abort(), timeout || 10000)
 
     try {
-      let response: Response
-
-      // Use undici for HTTPS requests when SSL verification should be skipped
-      if (skipSslVerify && url.startsWith("https://")) {
-        const dispatcher = new Agent({
-          connect: {
-            rejectUnauthorized: false,
-          },
-        })
-
-        const undiciFetchOptions: Parameters<typeof undiciFetch>[1] = {
-          method: method || "GET",
-          headers: headers || {},
-          signal: controller.signal,
-          dispatcher,
-        }
-
-        if (body && method !== "GET" && method !== "HEAD") {
-          undiciFetchOptions.body = typeof body === "string" ? body : JSON.stringify(body)
-        }
-
-        response = (await undiciFetch(url, undiciFetchOptions)) as unknown as Response
-      } else {
-        // Use standard fetch for HTTP or when SSL verification is enabled
-        const fetchOptions: RequestInit = {
-          method: method || "GET",
-          headers: headers || {},
-          signal: controller.signal,
-        }
-
-        if (body && method !== "GET" && method !== "HEAD") {
-          fetchOptions.body = typeof body === "string" ? body : JSON.stringify(body)
-        }
-
-        response = await fetch(url, fetchOptions)
+      // Always use undici with SSL verification disabled (verify=False)
+      // This matches the Python requests behavior: requests.post(..., verify=False)
+      const undiciFetchOptions: Parameters<typeof undiciFetch>[1] = {
+        method: method || "GET",
+        headers: headers || {},
+        signal: controller.signal,
+        dispatcher: insecureDispatcher,
       }
+
+      if (body && method !== "GET" && method !== "HEAD") {
+        undiciFetchOptions.body = typeof body === "string" ? body : JSON.stringify(body)
+      }
+
+      const response = (await undiciFetch(url, undiciFetchOptions)) as unknown as Response
 
       clearTimeout(timeoutId)
 

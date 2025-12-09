@@ -110,8 +110,9 @@ export function ApiTester({ onResult }: Props) {
   const [headers, setHeaders] = useState<Header[]>([{ key: "", value: "" }])
   const [body, setBody] = useState("")
   const [timeout, setTimeout] = useState("10000")
-  const [mode, setMode] = useState<RequestMode>("client")
-  const [skipSslVerify, setSkipSslVerify] = useState(false)
+  const [mode, setMode] = useState<RequestMode>("server")
+  // Always skip SSL verification - equivalent to Python's verify=False
+  const skipSslVerify = true
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<Omit<TestResult, "id" | "timestamp"> | null>(null)
 
@@ -428,28 +429,14 @@ export function ApiTester({ onResult }: Props) {
             </div>
           </div>
 
-          {/* SSL Verification - Server mode only */}
-          {mode === "server" && (
-            <div>
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="skip-ssl-verify-api"
-                  checked={skipSslVerify}
-                  onChange={(e) => setSkipSslVerify(e.target.checked)}
-                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-                />
-                <Label htmlFor="skip-ssl-verify-api" className="text-sm text-muted-foreground cursor-pointer">
-                  Skip SSL certificate verification
-                </Label>
-              </div>
-              {skipSslVerify && (
-                <p className="text-xs text-amber-500 mt-1">
-                  ⚠️ Warning: Disabling SSL verification is insecure and should only be used for testing with self-signed certificates.
-                </p>
-              )}
-            </div>
-          )}
+          {/* SSL Verification Info */}
+          <div className="p-3 rounded-md bg-muted/50 border border-border">
+            <p className="text-xs text-muted-foreground">
+              {mode === "server" 
+                ? "✓ SSL verification disabled (verify=False) - matches Python requests behavior."
+                : "⚠️ Client mode uses browser fetch which enforces SSL. Use Server mode for endpoints with self-signed certificates."}
+            </p>
+          </div>
 
           {/* Headers */}
           <div>

@@ -1,8 +1,15 @@
 import { Agent, fetch as undiciFetch } from "undici"
 
+// Create a dispatcher that skips SSL verification - equivalent to Python's verify=False
+const insecureDispatcher = new Agent({
+  connect: {
+    rejectUnauthorized: false,
+  },
+})
+
 export async function POST(req: Request) {
   try {
-    const { baseUrl, apiKey, model, messages, temperature, maxTokens, skipSslVerify } = await req.json()
+    const { baseUrl, apiKey, model, messages, temperature, maxTokens } = await req.json()
 
     if (!baseUrl || !apiKey) {
       return new Response(JSON.stringify({ error: "Base URL and API Key are required" }), {
@@ -35,31 +42,16 @@ export async function POST(req: Request) {
       "Authorization": `Bearer ${apiKey}`,
     }
 
-    let response: Response
-
-    // Use undici for HTTPS requests when SSL verification should be skipped
-    if (skipSslVerify && apiUrl.startsWith("https://")) {
-      const dispatcher = new Agent({
-        connect: {
-          rejectUnauthorized: false,
-        },
-      })
-
-      const unidiciResponse = await undiciFetch(apiUrl, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(requestBody),
-        dispatcher,
-      })
-      
-      response = unidiciResponse as unknown as Response
-    } else {
-      response = await fetch(apiUrl, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(requestBody),
-      })
-    }
+    // Always use undici with SSL verification disabled (verify=False)
+    // This matches the Python requests behavior: requests.post(..., verify=False)
+    const undiciFetchResponse = await undiciFetch(apiUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(requestBody),
+      dispatcher: insecureDispatcher,
+    })
+    
+    const response = undiciFetchResponse as unknown as Response
 
     const data = await response.json()
 

@@ -23,7 +23,8 @@ export function OpenAiTester({ onResult }: Props) {
   const [userPrompt, setUserPrompt] = useState("Say hello in one sentence.")
   const [temperature, setTemperature] = useState("0.1")
   const [maxTokens, setMaxTokens] = useState("100")
-  const [skipSslVerify, setSkipSslVerify] = useState(false)
+  // Always skip SSL verification - equivalent to Python's verify=False
+  const skipSslVerify = true
   const [mode, setMode] = useState<RequestMode>("server")
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<Omit<TestResult, "id" | "timestamp"> | null>(null)
@@ -418,35 +419,14 @@ export function OpenAiTester({ onResult }: Props) {
             </div>
           </div>
 
-          {/* SSL Verification - Server mode only */}
-          {mode === "server" && (
-            <div>
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="skip-ssl-verify"
-                  checked={skipSslVerify}
-                  onChange={(e) => setSkipSslVerify(e.target.checked)}
-                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-                />
-                <Label htmlFor="skip-ssl-verify" className="text-sm text-muted-foreground cursor-pointer">
-                  Skip SSL certificate verification
-                </Label>
-              </div>
-              {skipSslVerify && (
-                <p className="text-xs text-amber-500 mt-1">
-                  ⚠️ Warning: Disabling SSL verification is insecure and should only be used for testing with self-signed certificates.
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* Client mode SSL note */}
-          {mode === "client" && (
+          {/* SSL Verification Info */}
+          <div className="p-3 rounded-md bg-muted/50 border border-border">
             <p className="text-xs text-muted-foreground">
-              ℹ️ Note: SSL certificate verification cannot be skipped in client mode (browser enforces SSL).
+              {mode === "server" 
+                ? "✓ SSL verification disabled (verify=False) - matches Python requests behavior for MaaS endpoints."
+                : "⚠️ Client mode uses browser fetch which enforces SSL. Use Server mode for endpoints with self-signed certificates."}
             </p>
-          )}
+          </div>
         </div>
       </div>
 
