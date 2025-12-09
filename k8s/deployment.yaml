@@ -22,7 +22,7 @@ spec:
           #   Private Registry: registry.example.com/ep:latest
           #   Google Container Registry: gcr.io/your-project/ep:latest
           #   Amazon ECR: 123456789.dkr.ecr.region.amazonaws.com/ep:latest
-          image: pyburn/ep:latest
+          image: dpsauatdk01.intra.hkma.gov.hk:8443/dockerhub-proxy/pyburn/ep:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 3000
