@@ -58,9 +58,25 @@ export function OpenAiTester({ onResult }: Props) {
     try {
       // Create OpenAI client directly in the browser
       // Reference: https://github.com/vercel/ai/issues/5140
+      // Use custom fetch to ensure proper header handling in browser
+      const customFetch: typeof fetch = async (input, init) => {
+        const headers = new Headers(init?.headers)
+        // Ensure Authorization header is set (some providers need this explicitly)
+        if (!headers.has("Authorization")) {
+          headers.set("Authorization", `Bearer ${apiKey}`)
+        }
+        return fetch(input, {
+          ...init,
+          headers,
+          // Explicitly set credentials to omit to avoid cookie-based auth issues
+          credentials: "omit",
+        })
+      }
+
       const openai = createOpenAI({
         baseURL: `${baseUrl.replace(/\/+$/, "")}/v1`,
         apiKey: apiKey,
+        fetch: customFetch,
         // Note: skipSslVerify doesn't work in browser - browsers enforce SSL
       })
 
