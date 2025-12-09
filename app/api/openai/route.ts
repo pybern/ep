@@ -1,29 +1,4 @@
-import { createOpenAI } from "@ai-sdk/openai"
-import { generateText } from "ai"
-
-// Create a custom fetch that skips SSL verification
-function createInsecureFetch() {
-  return async (url: string | URL | Request, init?: RequestInit) => {
-    const urlString = url instanceof Request ? url.url : url.toString()
-    
-    // Only use custom agent for HTTPS requests
-    if (urlString.startsWith("https://")) {
-      // Use undici with custom dispatcher to skip SSL verification
-      const { Agent, fetch: undiciFetch } = await import("undici")
-      const dispatcher = new Agent({
-        connect: {
-          rejectUnauthorized: false,
-        },
-      })
-      return undiciFetch(url as Parameters<typeof undiciFetch>[0], {
-        ...init,
-        dispatcher,
-      } as Parameters<typeof undiciFetch>[1]) as unknown as Response
-    }
-    
-    return fetch(url, init)
-  }
-}
+import { Agent, fetch as undiciFetch } from "undici"
 
 export async function POST(req: Request) {
   try {
@@ -43,28 +18,65 @@ export async function POST(req: Request) {
       })
     }
 
-    // Create a custom OpenAI-compatible client
-    const openai = createOpenAI({
-      baseURL: `${baseUrl}/v1`,
-      apiKey: apiKey,
-      fetch: skipSslVerify ? createInsecureFetch() : undefined,
-    })
-
-    const result = await generateText({
-      model: openai(model),
+    // Build request body following OpenAI API format
+    const requestBody = {
+      model,
       messages: messages || [
         { role: "system", content: "You are a helpful assistant." },
         { role: "user", content: "Say hello in one sentence." },
       ],
       temperature: temperature ?? 0.1,
-      maxOutputTokens: maxTokens ?? 100,
-    })
+      max_tokens: maxTokens ?? 100,
+    }
+
+    const apiUrl = `${baseUrl}/v1/chat/completions`
+    const headers = {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    }
+
+    let response: Response
+
+    // Use undici for HTTPS requests when SSL verification should be skipped
+    if (skipSslVerify && apiUrl.startsWith("https://")) {
+      const dispatcher = new Agent({
+        connect: {
+          rejectUnauthorized: false,
+        },
+      })
+
+      const unidiciResponse = await undiciFetch(apiUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestBody),
+        dispatcher,
+      })
+      
+      response = unidiciResponse as unknown as Response
+    } else {
+      response = await fetch(apiUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestBody),
+      })
+    }
+
+    const data = await response.json()
+
+    if (!response.ok) {
+      const errorMessage = data.error?.message || data.message || `HTTP ${response.status}`
+      throw new Error(errorMessage)
+    }
+
+    const choice = data.choices?.[0]
+    const text = choice?.message?.content || ""
+    const finishReason = choice?.finish_reason || "unknown"
 
     return new Response(
       JSON.stringify({
-        text: result.text,
-        usage: result.usage,
-        finishReason: result.finishReason,
+        text,
+        usage: data.usage,
+        finishReason,
       }),
       {
         status: 200,

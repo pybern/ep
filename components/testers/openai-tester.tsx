@@ -9,8 +9,6 @@ import { ModeToggle, type RequestMode } from "@/components/ui/mode-toggle"
 import type { TestResult } from "@/components/connection-tester"
 import { ResultDisplay } from "@/components/result-display"
 import { Loader2, Play, Eye, EyeOff, Sparkles } from "lucide-react"
-import { createOpenAI } from "@ai-sdk/openai"
-import { generateText } from "ai"
 
 type Props = {
   onResult: (result: Omit<TestResult, "id" | "timestamp">) => void
@@ -56,42 +54,40 @@ export function OpenAiTester({ onResult }: Props) {
     const startTime = performance.now()
 
     try {
-      // Create OpenAI client directly in the browser
-      // Reference: https://github.com/vercel/ai/issues/5140
-      // Use custom fetch to ensure proper header handling in browser
-      const customFetch: typeof fetch = async (input, init) => {
-        const headers = new Headers(init?.headers)
-        // Ensure Authorization header is set (some providers need this explicitly)
-        if (!headers.has("Authorization")) {
-          headers.set("Authorization", `Bearer ${apiKey}`)
-        }
-        return fetch(input, {
-          ...init,
-          headers,
-          // Explicitly set credentials to omit to avoid cookie-based auth issues
-          credentials: "omit",
-        })
-      }
-
-      const openai = createOpenAI({
-        baseURL: `${baseUrl.replace(/\/+$/, "")}/v1`,
-        apiKey: apiKey,
-        fetch: customFetch,
-        // Note: skipSslVerify doesn't work in browser - browsers enforce SSL
-      })
-
-      const result = await generateText({
-        model: openai(model.trim()),
+      // Direct fetch to OpenAI-compatible API from browser
+      // This bypasses AI SDK and gives more control over the request
+      const requestBody = {
+        model: model.trim(),
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
         temperature: parseFloat(temperature),
-        maxOutputTokens: parseInt(maxTokens),
+        max_tokens: parseInt(maxTokens),
+      }
+
+      const response = await fetch(`${baseUrl.replace(/\/+$/, "")}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        credentials: "omit", // Avoid cookie-based auth issues
+        body: JSON.stringify(requestBody),
       })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error?.message || data.message || `HTTP ${response.status}: ${response.statusText}`)
+      }
 
       const endTime = performance.now()
       const responseTime = Math.round(endTime - startTime)
+
+      const choice = data.choices?.[0]
+      const text = choice?.message?.content || ""
+      const finishReason = choice?.finish_reason || "unknown"
 
       return {
         type: "openai" as const,
@@ -105,9 +101,9 @@ export function OpenAiTester({ onResult }: Props) {
           mode: "client",
           temperature: parseFloat(temperature),
           maxTokens: parseInt(maxTokens),
-          usage: result.usage,
-          finishReason: result.finishReason,
-          responseBody: result.text,
+          usage: data.usage,
+          finishReason,
+          responseBody: text,
         },
       }
     } catch (error) {
