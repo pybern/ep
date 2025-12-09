@@ -1,9 +1,33 @@
 import { createOpenAI } from "@ai-sdk/openai"
 import { generateText } from "ai"
 
+// Create a custom fetch that skips SSL verification
+function createInsecureFetch() {
+  return async (url: string | URL | Request, init?: RequestInit) => {
+    const urlString = url instanceof Request ? url.url : url.toString()
+    
+    // Only use custom agent for HTTPS requests
+    if (urlString.startsWith("https://")) {
+      // Use undici with custom dispatcher to skip SSL verification
+      const { Agent, fetch: undiciFetch } = await import("undici")
+      const dispatcher = new Agent({
+        connect: {
+          rejectUnauthorized: false,
+        },
+      })
+      return undiciFetch(url as Parameters<typeof undiciFetch>[0], {
+        ...init,
+        dispatcher,
+      } as Parameters<typeof undiciFetch>[1]) as unknown as Response
+    }
+    
+    return fetch(url, init)
+  }
+}
+
 export async function POST(req: Request) {
   try {
-    const { baseUrl, apiKey, model, messages, temperature, maxTokens } = await req.json()
+    const { baseUrl, apiKey, model, messages, temperature, maxTokens, skipSslVerify } = await req.json()
 
     if (!baseUrl || !apiKey) {
       return new Response(JSON.stringify({ error: "Base URL and API Key are required" }), {
@@ -23,6 +47,7 @@ export async function POST(req: Request) {
     const openai = createOpenAI({
       baseURL: `${baseUrl}/v1`,
       apiKey: apiKey,
+      fetch: skipSslVerify ? createInsecureFetch() : undefined,
     })
 
     const result = await generateText({

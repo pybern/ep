@@ -22,6 +22,7 @@ export function OpenAiTester({ onResult }: Props) {
   const [userPrompt, setUserPrompt] = useState("Say hello in one sentence.")
   const [temperature, setTemperature] = useState("0.1")
   const [maxTokens, setMaxTokens] = useState("100")
+  const [skipSslVerify, setSkipSslVerify] = useState(false)
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<Omit<TestResult, "id" | "timestamp"> | null>(null)
 
@@ -82,6 +83,7 @@ export function OpenAiTester({ onResult }: Props) {
           ],
           temperature: parseFloat(temperature),
           maxTokens: parseInt(maxTokens),
+          skipSslVerify,
         }),
       })
 
@@ -272,6 +274,25 @@ export function OpenAiTester({ onResult }: Props) {
               />
             </div>
           </div>
+
+          {/* SSL Verification */}
+          <div className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              id="skip-ssl-verify"
+              checked={skipSslVerify}
+              onChange={(e) => setSkipSslVerify(e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+            />
+            <Label htmlFor="skip-ssl-verify" className="text-sm text-muted-foreground cursor-pointer">
+              Skip SSL certificate verification
+            </Label>
+          </div>
+          {skipSslVerify && (
+            <p className="text-xs text-amber-500">
+              ⚠️ Warning: Disabling SSL verification is insecure and should only be used for testing with self-signed certificates.
+            </p>
+          )}
         </div>
       </div>
 
