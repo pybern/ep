@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { ModeToggle, type RequestMode } from "@/components/ui/mode-toggle"
 import type { TestResult } from "@/components/connection-tester"
 import { ResultDisplay } from "@/components/result-display"
 import { Loader2, Play, Eye, EyeOff, Sparkles } from "lucide-react"
@@ -23,6 +24,7 @@ export function OpenAiTester({ onResult }: Props) {
   const [temperature, setTemperature] = useState("0.1")
   const [maxTokens, setMaxTokens] = useState("100")
   const [skipSslVerify, setSkipSslVerify] = useState(false)
+  const [mode, setMode] = useState<RequestMode>("server")
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<Omit<TestResult, "id" | "timestamp"> | null>(null)
 
@@ -48,23 +50,137 @@ export function OpenAiTester({ onResult }: Props) {
     return { valid: true, message: "Valid" }
   }
 
-  const testConnection = async () => {
-    const validation = validateInputs()
-    if (!validation.valid) {
-      const errorResult = {
-        type: "openai" as const,
-        connectionString: baseUrl,
-        status: "error" as const,
-        message: validation.message,
-      }
-      setResult(errorResult)
-      onResult(errorResult)
-      return
+  const testConnectionClient = async () => {
+    const startTime = performance.now()
+    
+    // Build the URL - user provides base like "https://openrouter.ai/api"
+    const apiUrl = `${baseUrl.replace(/\/+$/, "")}/v1/chat/completions`
+    
+    // Build request body
+    const requestBody = {
+      model: model.trim(),
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: parseFloat(temperature),
+      max_tokens: parseInt(maxTokens),
     }
 
-    setTesting(true)
-    setResult(null)
+    try {
+      const response = await fetch(apiUrl, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      })
 
+      const endTime = performance.now()
+      const responseTime = Math.round(endTime - startTime)
+
+      // Try to parse response as JSON
+      let data: Record<string, unknown>
+      const responseText = await response.text()
+      
+      try {
+        data = JSON.parse(responseText)
+      } catch {
+        // Response is not JSON
+        return {
+          type: "openai" as const,
+          connectionString: `${baseUrl} (${model})`,
+          status: "error" as const,
+          message: `Non-JSON response: ${response.status} ${response.statusText}`,
+          responseTime,
+          details: {
+            mode: "client",
+            requestUrl: apiUrl,
+            requestBody,
+            responseStatus: response.status,
+            responseStatusText: response.statusText,
+            responseBody: responseText.slice(0, 2000),
+          },
+        }
+      }
+
+      if (!response.ok) {
+        // Extract error message from various possible formats
+        const errorObj = data.error as Record<string, unknown> | undefined
+        const errorMessage = 
+          errorObj?.message ||
+          data.message ||
+          data.detail ||
+          `HTTP ${response.status}: ${response.statusText}`
+
+        return {
+          type: "openai" as const,
+          connectionString: `${baseUrl} (${model})`,
+          status: "error" as const,
+          message: String(errorMessage),
+          responseTime,
+          details: {
+            mode: "client",
+            requestUrl: apiUrl,
+            requestBody,
+            responseStatus: response.status,
+            responseStatusText: response.statusText,
+            responseBody: data,
+          },
+        }
+      }
+
+      // Success case
+      const choices = data.choices as Array<{ message?: { content?: string }; finish_reason?: string }> | undefined
+      const choice = choices?.[0]
+      const text = choice?.message?.content || ""
+      const finishReason = choice?.finish_reason || "unknown"
+
+      return {
+        type: "openai" as const,
+        connectionString: `${baseUrl} (${model})`,
+        status: "success" as const,
+        message: "OpenAI API connection successful",
+        responseTime,
+        details: {
+          mode: "client",
+          requestUrl: apiUrl,
+          model,
+          temperature: parseFloat(temperature),
+          maxTokens: parseInt(maxTokens),
+          usage: data.usage,
+          finishReason,
+          responseBody: text,
+        },
+      }
+    } catch (error) {
+      const endTime = performance.now()
+      const responseTime = Math.round(endTime - startTime)
+
+      // Network/fetch errors
+      const errorMessage = error instanceof Error ? error.message : "Unknown error occurred"
+      const errorName = error instanceof Error ? error.name : "Error"
+
+      return {
+        type: "openai" as const,
+        connectionString: `${baseUrl} (${model})`,
+        status: "error" as const,
+        message: `${errorName}: ${errorMessage}`,
+        responseTime,
+        details: {
+          mode: "client",
+          requestUrl: apiUrl,
+          requestBody,
+          errorType: errorName,
+          errorMessage,
+          errorStack: error instanceof Error ? error.stack : undefined,
+        },
+      }
+    }
+  }
+
+  const testConnectionServer = async () => {
     const startTime = performance.now()
 
     try {
@@ -74,7 +190,7 @@ export function OpenAiTester({ onResult }: Props) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          baseUrl: baseUrl.replace(/\/+$/, ""), // Remove trailing slashes
+          baseUrl: baseUrl.replace(/\/+$/, ""),
           apiKey,
           model: model.trim(),
           messages: [
@@ -96,15 +212,17 @@ export function OpenAiTester({ onResult }: Props) {
       const endTime = performance.now()
       const responseTime = Math.round(endTime - startTime)
 
-      const testResult: Omit<TestResult, "id" | "timestamp"> = {
-        type: "openai",
+      return {
+        type: "openai" as const,
         connectionString: `${baseUrl} (${model})`,
-        status: "success",
+        status: "success" as const,
         message: "OpenAI API connection successful",
         responseTime,
         details: {
           model,
           baseUrl,
+          mode: "server",
+          skipSslVerify,
           temperature: parseFloat(temperature),
           maxTokens: parseInt(maxTokens),
           usage: data.usage,
@@ -112,27 +230,49 @@ export function OpenAiTester({ onResult }: Props) {
           responseBody: data.text,
         },
       }
-
-      setResult(testResult)
-      onResult(testResult)
     } catch (error) {
       const endTime = performance.now()
       const responseTime = Math.round(endTime - startTime)
 
-      const errorResult: Omit<TestResult, "id" | "timestamp"> = {
-        type: "openai",
+      return {
+        type: "openai" as const,
         connectionString: `${baseUrl} (${model})`,
-        status: "error",
+        status: "error" as const,
         message: error instanceof Error ? error.message : "Unknown error occurred",
         responseTime,
         details: {
           model,
           baseUrl,
+          mode: "server",
         },
       }
+    }
+  }
 
+  const testConnection = async () => {
+    const validation = validateInputs()
+    if (!validation.valid) {
+      const errorResult = {
+        type: "openai" as const,
+        connectionString: baseUrl,
+        status: "error" as const,
+        message: validation.message,
+      }
       setResult(errorResult)
       onResult(errorResult)
+      return
+    }
+
+    setTesting(true)
+    setResult(null)
+
+    try {
+      const testResult = mode === "client"
+        ? await testConnectionClient()
+        : await testConnectionServer()
+
+      setResult(testResult)
+      onResult(testResult)
     } finally {
       setTesting(false)
     }
@@ -150,6 +290,9 @@ export function OpenAiTester({ onResult }: Props) {
 
       <div className="border-t border-border pt-4">
         <div className="grid gap-4">
+          {/* Mode Toggle */}
+          <ModeToggle value={mode} onChange={setMode} disabled={testing} />
+
           {/* Base URL */}
           <div>
             <Label htmlFor="base-url" className="text-sm text-muted-foreground mb-1.5 block">
@@ -275,22 +418,33 @@ export function OpenAiTester({ onResult }: Props) {
             </div>
           </div>
 
-          {/* SSL Verification */}
-          <div className="flex items-center space-x-2">
-            <input
-              type="checkbox"
-              id="skip-ssl-verify"
-              checked={skipSslVerify}
-              onChange={(e) => setSkipSslVerify(e.target.checked)}
-              className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-            />
-            <Label htmlFor="skip-ssl-verify" className="text-sm text-muted-foreground cursor-pointer">
-              Skip SSL certificate verification
-            </Label>
-          </div>
-          {skipSslVerify && (
-            <p className="text-xs text-amber-500">
-              ⚠️ Warning: Disabling SSL verification is insecure and should only be used for testing with self-signed certificates.
+          {/* SSL Verification - Server mode only */}
+          {mode === "server" && (
+            <div>
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="skip-ssl-verify"
+                  checked={skipSslVerify}
+                  onChange={(e) => setSkipSslVerify(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                />
+                <Label htmlFor="skip-ssl-verify" className="text-sm text-muted-foreground cursor-pointer">
+                  Skip SSL certificate verification
+                </Label>
+              </div>
+              {skipSslVerify && (
+                <p className="text-xs text-amber-500 mt-1">
+                  ⚠️ Warning: Disabling SSL verification is insecure and should only be used for testing with self-signed certificates.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Client mode SSL note */}
+          {mode === "client" && (
+            <p className="text-xs text-muted-foreground">
+              ℹ️ Note: SSL certificate verification cannot be skipped in client mode (browser enforces SSL).
             </p>
           )}
         </div>
@@ -301,12 +455,12 @@ export function OpenAiTester({ onResult }: Props) {
         {testing ? (
           <>
             <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            Testing Connection...
+            Testing Connection ({mode} mode)...
           </>
         ) : (
           <>
             <Play className="h-4 w-4 mr-2" />
-            Test Connection
+            Test Connection ({mode} mode)
           </>
         )}
       </Button>

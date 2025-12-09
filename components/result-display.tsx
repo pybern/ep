@@ -13,9 +13,10 @@ export function ResultDisplay({ result }: Props) {
   const [headersOpen, setHeadersOpen] = useState(false)
   const [bodyOpen, setBodyOpen] = useState(true)
 
-  const { responseBody, ...otherDetails } = (result.details as Record<string, unknown>) || {}
+  const { responseBody, hint, ...otherDetails } = (result.details as Record<string, unknown>) || {}
   const hasHeaders = otherDetails && Object.keys(otherDetails).length > 0
   const hasBody = responseBody !== null && responseBody !== undefined
+  const hasHint = typeof hint === "string" && hint.length > 0
 
   return (
     <div
@@ -34,6 +35,14 @@ export function ResultDisplay({ result }: Props) {
             {result.status === "success" ? "Success" : "Failed"}
           </p>
           <p className="text-sm text-muted-foreground mt-0.5">{result.message}</p>
+
+          {hasHint && (
+            <div className="mt-2 p-2 rounded bg-amber-500/10 border border-amber-500/20">
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                💡 {hint}
+              </p>
+            </div>
+          )}
 
           {result.responseTime && (
             <div className="flex items-center gap-1 mt-2 text-xs text-muted-foreground">

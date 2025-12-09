@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { ModeToggle, type RequestMode } from "@/components/ui/mode-toggle"
 import type { TestResult } from "@/components/connection-tester"
 import { ResultDisplay } from "@/components/result-display"
 import { Loader2, Play, Plus, Trash2, Zap } from "lucide-react"
@@ -109,6 +110,8 @@ export function ApiTester({ onResult }: Props) {
   const [headers, setHeaders] = useState<Header[]>([{ key: "", value: "" }])
   const [body, setBody] = useState("")
   const [timeout, setTimeout] = useState("10000")
+  const [mode, setMode] = useState<RequestMode>("client")
+  const [skipSslVerify, setSkipSslVerify] = useState(false)
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<Omit<TestResult, "id" | "timestamp"> | null>(null)
 
@@ -137,34 +140,7 @@ export function ApiTester({ onResult }: Props) {
     }
   }
 
-  const testConnection = async () => {
-    if (!url.trim()) {
-      const errorResult = {
-        type: "api" as const,
-        connectionString: url,
-        status: "error" as const,
-        message: "URL is required",
-      }
-      setResult(errorResult)
-      onResult(errorResult)
-      return
-    }
-
-    if (!validateUrl(url)) {
-      const errorResult = {
-        type: "api" as const,
-        connectionString: url,
-        status: "error" as const,
-        message: "Invalid URL format",
-      }
-      setResult(errorResult)
-      onResult(errorResult)
-      return
-    }
-
-    setTesting(true)
-    setResult(null)
-
+  const testConnectionClient = async () => {
     const startTime = performance.now()
 
     try {
@@ -200,10 +176,10 @@ export function ApiTester({ onResult }: Props) {
         if (contentType.includes("application/json") && text) {
           responseBody = JSON.parse(text)
         } else if (text) {
-          responseBody = text.slice(0, 5000) // Limit text response size
+          responseBody = text.slice(0, 5000)
         }
       } catch {
-        // Response body parsing failed, that's okay
+        // Response body parsing failed
       }
 
       const testResult: Omit<TestResult, "id" | "timestamp"> = {
@@ -219,20 +195,20 @@ export function ApiTester({ onResult }: Props) {
           statusText: response.statusText,
           headers: Object.fromEntries(response.headers.entries()),
           method,
+          mode: "client",
           responseBody,
         },
       }
 
-      setResult(testResult)
-      onResult(testResult)
+      return testResult
     } catch (error) {
       const endTime = performance.now()
       const responseTime = Math.round(endTime - startTime)
 
-      const errorResult: Omit<TestResult, "id" | "timestamp"> = {
-        type: "api",
+      return {
+        type: "api" as const,
         connectionString: url,
-        status: "error",
+        status: "error" as const,
         message:
           error instanceof Error
             ? error.name === "AbortError"
@@ -240,10 +216,118 @@ export function ApiTester({ onResult }: Props) {
               : error.message
             : "Unknown error occurred",
         responseTime,
+        details: {
+          mode: "client",
+        },
+      }
+    }
+  }
+
+  const testConnectionServer = async () => {
+    const startTime = performance.now()
+
+    try {
+      const headerObj: Record<string, string> = {}
+      headers.forEach((h) => {
+        if (h.key.trim()) headerObj[h.key] = h.value
+      })
+
+      const response = await fetch("/api/proxy", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          url,
+          method,
+          headers: headerObj,
+          body: method !== "GET" && method !== "HEAD" && body.trim() ? body : undefined,
+          timeout: Number.parseInt(timeout),
+          skipSslVerify,
+        }),
+      })
+
+      const endTime = performance.now()
+      const responseTime = Math.round(endTime - startTime)
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || `Proxy error: ${response.status}`)
       }
 
+      const testResult: Omit<TestResult, "id" | "timestamp"> = {
+        type: "api",
+        connectionString: url,
+        status: data.ok ? "success" : "error",
+        message: data.ok
+          ? `Connection successful - ${data.status} ${data.statusText}`
+          : `Request failed - ${data.status} ${data.statusText}`,
+        responseTime,
+        details: {
+          status: data.status,
+          statusText: data.statusText,
+          headers: data.headers,
+          method,
+          mode: "server",
+          skipSslVerify,
+          responseBody: data.body,
+        },
+      }
+
+      return testResult
+    } catch (error) {
+      const endTime = performance.now()
+      const responseTime = Math.round(endTime - startTime)
+
+      return {
+        type: "api" as const,
+        connectionString: url,
+        status: "error" as const,
+        message: error instanceof Error ? error.message : "Unknown error occurred",
+        responseTime,
+        details: {
+          mode: "server",
+        },
+      }
+    }
+  }
+
+  const testConnection = async () => {
+    if (!url.trim()) {
+      const errorResult = {
+        type: "api" as const,
+        connectionString: url,
+        status: "error" as const,
+        message: "URL is required",
+      }
       setResult(errorResult)
       onResult(errorResult)
+      return
+    }
+
+    if (!validateUrl(url)) {
+      const errorResult = {
+        type: "api" as const,
+        connectionString: url,
+        status: "error" as const,
+        message: "Invalid URL format",
+      }
+      setResult(errorResult)
+      onResult(errorResult)
+      return
+    }
+
+    setTesting(true)
+    setResult(null)
+
+    try {
+      const testResult = mode === "client" 
+        ? await testConnectionClient() 
+        : await testConnectionServer()
+
+      setResult(testResult)
+      onResult(testResult)
     } finally {
       setTesting(false)
     }
@@ -288,6 +372,9 @@ export function ApiTester({ onResult }: Props) {
 
       <div className="border-t border-border pt-4">
         <div className="grid gap-4">
+          {/* Mode Toggle */}
+          <ModeToggle value={mode} onChange={setMode} disabled={testing} />
+
           {/* URL and Method */}
           <div className="flex gap-2">
             <div className="w-28">
@@ -340,6 +427,29 @@ export function ApiTester({ onResult }: Props) {
               />
             </div>
           </div>
+
+          {/* SSL Verification - Server mode only */}
+          {mode === "server" && (
+            <div>
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="skip-ssl-verify-api"
+                  checked={skipSslVerify}
+                  onChange={(e) => setSkipSslVerify(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                />
+                <Label htmlFor="skip-ssl-verify-api" className="text-sm text-muted-foreground cursor-pointer">
+                  Skip SSL certificate verification
+                </Label>
+              </div>
+              {skipSslVerify && (
+                <p className="text-xs text-amber-500 mt-1">
+                  ⚠️ Warning: Disabling SSL verification is insecure and should only be used for testing with self-signed certificates.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Headers */}
           <div>
@@ -398,12 +508,12 @@ export function ApiTester({ onResult }: Props) {
         {testing ? (
           <>
             <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            Testing Connection...
+            Testing Connection ({mode} mode)...
           </>
         ) : (
           <>
             <Play className="h-4 w-4 mr-2" />
-            Test Connection
+            Test Connection ({mode} mode)
           </>
         )}
       </Button>
