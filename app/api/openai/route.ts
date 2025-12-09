@@ -16,14 +16,6 @@ export async function POST(req: Request) {
     const openai = createOpenAI({
       baseURL: `${baseUrl}/v1`,
       apiKey: apiKey,
-      // Disable SSL verification for internal endpoints
-      fetch: async (url, options) => {
-        return fetch(url, {
-          ...options,
-          // @ts-expect-error - Node.js specific option for self-signed certs
-          rejectUnauthorized: false,
-        })
-      },
     })
 
     const result = streamText({
@@ -33,10 +25,10 @@ export async function POST(req: Request) {
         { role: "user", content: "Say hello in one sentence." },
       ],
       temperature: temperature ?? 0.1,
-      maxTokens: maxTokens ?? 100,
+      maxOutputTokens: maxTokens ?? 100,
     })
 
-    return result.toDataStreamResponse()
+    return result.toTextStreamResponse()
   } catch (error) {
     console.error("OpenAI API Error:", error)
     return new Response(

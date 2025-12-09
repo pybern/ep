@@ -9,7 +9,6 @@ import { Textarea } from "@/components/ui/textarea"
 import type { TestResult } from "@/components/connection-tester"
 import { ResultDisplay } from "@/components/result-display"
 import { Loader2, Play, Eye, EyeOff, Sparkles } from "lucide-react"
-import { useChat } from "ai/react"
 
 type Props = {
   onResult: (result: Omit<TestResult, "id" | "timestamp">) => void
@@ -25,7 +24,7 @@ const PRESET_MODELS = [
   { name: "Custom", value: "custom" },
 ]
 
-export function OpenApiTester({ onResult }: Props) {
+export function OpenAiTester({ onResult }: Props) {
   const [baseUrl, setBaseUrl] = useState("")
   const [apiKey, setApiKey] = useState("")
   const [showApiKey, setShowApiKey] = useState(false)
@@ -72,7 +71,7 @@ export function OpenApiTester({ onResult }: Props) {
     const validation = validateInputs()
     if (!validation.valid) {
       const errorResult = {
-        type: "openapi" as const,
+        type: "openai" as const,
         connectionString: baseUrl,
         status: "error" as const,
         message: validation.message,
@@ -123,20 +122,8 @@ export function OpenApiTester({ onResult }: Props) {
           if (done) break
 
           const chunk = decoder.decode(value, { stream: true })
-          // Parse the streaming data format from AI SDK
-          const lines = chunk.split("\n")
-          for (const line of lines) {
-            if (line.startsWith("0:")) {
-              // Text content
-              try {
-                const text = JSON.parse(line.slice(2))
-                fullResponse += text
-                setStreamingResponse(fullResponse)
-              } catch {
-                // Not valid JSON, skip
-              }
-            }
-          }
+          fullResponse += chunk
+          setStreamingResponse(fullResponse)
         }
       }
 
@@ -144,10 +131,10 @@ export function OpenApiTester({ onResult }: Props) {
       const responseTime = Math.round(endTime - startTime)
 
       const testResult: Omit<TestResult, "id" | "timestamp"> = {
-        type: "openapi",
+        type: "openai",
         connectionString: `${baseUrl} (${getModel()})`,
         status: "success",
-        message: "OpenAPI connection successful - received streaming response",
+        message: "OpenAI API connection successful - received streaming response",
         responseTime,
         details: {
           model: getModel(),
@@ -165,7 +152,7 @@ export function OpenApiTester({ onResult }: Props) {
       const responseTime = Math.round(endTime - startTime)
 
       const errorResult: Omit<TestResult, "id" | "timestamp"> = {
-        type: "openapi",
+        type: "openai",
         connectionString: `${baseUrl} (${getModel()})`,
         status: "error",
         message: error instanceof Error ? error.message : "Unknown error occurred",
@@ -187,7 +174,7 @@ export function OpenApiTester({ onResult }: Props) {
     <div className="space-y-4">
       <div className="flex items-center gap-2 mb-2">
         <Sparkles className="h-4 w-4 text-purple-500" />
-        <Label className="text-sm text-muted-foreground">OpenAI-Compatible API Connection Test</Label>
+        <Label className="text-sm text-muted-foreground">OpenAI API Connection Test</Label>
       </div>
       <p className="text-xs text-muted-foreground">
         Test connections to OpenAI-compatible APIs (OpenAI, Azure OpenAI, local LLMs, MaaS endpoints, etc.)
