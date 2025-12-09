@@ -71,8 +71,10 @@ export function OpenAiTester({ onResult }: Props) {
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${apiKey}`,
+          // OpenRouter and some providers require these headers for browser requests
+          "HTTP-Referer": window.location.origin,
+          "X-Title": "Connection Tester",
         },
-        credentials: "omit", // Avoid cookie-based auth issues
         body: JSON.stringify(requestBody),
       })
 
