@@ -27,6 +27,17 @@ jobs:
       packages: write
     
     steps:
+      - name: Check required secrets
+        run: |
+          if [ -z "${{ secrets.DOCKER_USERNAME }}" ]; then
+            echo "::error::DOCKER_USERNAME secret is not set or not accessible (secrets are not available in PR workflows)"
+            exit 1
+          fi
+          if [ -z "${{ secrets.DOCKER_TOKEN }}" ]; then
+            echo "::error::DOCKER_TOKEN secret is not set"
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
