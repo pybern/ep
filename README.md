@@ -1,196 +1,204 @@
-# Connection Tester App
+# Endpoint Connection Tester
 
-A Next.js application for testing database and API connections within a Kubernetes cluster.
+A comprehensive tool for testing API endpoints and OpenAI-compatible APIs with support for both client-side and server-side request modes.
 
-## Local Development
+## Features
+
+- **API Testing**: Test any HTTP endpoint with full control over method, headers, and body
+- **OpenAI API Testing**: Test OpenAI-compatible APIs (OpenAI, Azure, local LLMs, MaaS endpoints)
+- **Dual Mode**: Switch between client-side (browser) and server-side (proxied) requests
+- **SSL Control**: Skip SSL certificate verification for internal/self-signed certs (server mode only)
+- **Quick Presets**: Pre-configured test endpoints for rapid testing
+
+---
+
+## Test Cases
+
+### 1. API Testing
+
+#### Client-Side Mode
+
+The request is made directly from the browser using the native `fetch` API.
+
+| Test Case | Description | Validation |
+|-----------|-------------|------------|
+| **GET Request** | Fetch data from any URL | Status code, response body |
+| **POST/PUT/PATCH/DELETE Request** | Send data with custom body | Status code, response body |
+| **HEAD/OPTIONS Request** | Metadata-only requests | Status code, headers only |
+| **Custom Headers** | Add arbitrary key-value headers | Headers sent correctly |
+| **Request Timeout** | Configurable timeout (1000-60000ms) | AbortError on timeout |
+| **JSON Response Parsing** | Auto-parse `application/json` | Parsed JSON in details |
+| **Non-JSON Response** | Text responses truncated to 5000 chars | Raw text in details |
+| **Network Errors** | DNS, connection failures | Error message captured |
+| **CORS Errors** | Cross-origin restrictions | Browser CORS error surfaced |
+
+**Limitations:**
+- ❌ Cannot skip SSL certificate verification (browser enforces SSL)
+- ❌ Subject to browser CORS policies
+
+---
+
+#### Server-Side Mode
+
+The request is proxied through a Next.js API route (`/api/proxy`) using `undici` for advanced HTTP control.
+
+| Test Case | Description | Validation |
+|-----------|-------------|------------|
+| **All HTTP Methods** | GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS | Status code, response body |
+| **Custom Headers** | Pass arbitrary headers to target | Headers forwarded correctly |
+| **Request Body** | JSON or text body for non-GET methods | Body sent correctly |
+| **Skip SSL Verification** | For self-signed certificates | `undici` Agent with `rejectUnauthorized: false` |
+| **Request Timeout** | Configurable timeout (default 10000ms) | 408 Timeout response |
+| **JSON Response Parsing** | Auto-parse `application/json` | Parsed JSON in response |
+| **Large Response Handling** | Responses truncated to 10000 chars | Truncated text |
+| **URL Validation** | Invalid URL format detection | 400 Bad Request |
+| **Network Errors** | Connection failures, DNS errors | 500 Internal Server Error |
+
+**Advantages:**
+- ✅ No CORS restrictions
+- ✅ Can skip SSL verification for internal/self-signed certs
+
+---
+
+### 2. OpenAI API Testing
+
+#### Client-Side Mode
+
+The request is made directly from the browser to the OpenAI-compatible API endpoint.
+
+| Test Case | Description | Validation |
+|-----------|-------------|------------|
+| **Chat Completion Request** | Send messages to `/v1/chat/completions` | Response text, usage stats |
+| **Model Selection** | Test any model (GPT-4, Llama, Claude, etc.) | Model-specific response |
+| **System Prompt** | Customize assistant behavior | Affects response content |
+| **User Prompt** | Test message input | AI-generated response |
+| **Temperature** | Control randomness (0-2) | Affects response variability |
+| **Max Tokens** | Limit response length (1-4096) | Truncated at limit |
+| **API Key Validation** | Required field check | Error if missing |
+| **Base URL Validation** | Valid URL format required | Error if invalid |
+| **HTTP Error Responses** | 400, 401, 403, 404, 500, etc. | Error message extracted |
+| **Non-JSON Response** | Gateway/proxy error pages | Error with preview |
+| **Network Errors** | Connection failures, timeouts | Error name + message |
+
+**Limitations:**
+- ❌ Cannot skip SSL certificate verification
+- ❌ Subject to browser CORS (may fail for some providers)
+
+---
+
+#### Server-Side Mode
+
+The request is proxied through a Next.js API route (`/api/openai`) with SSL control.
+
+| Test Case | Description | Validation |
+|-----------|-------------|------------|
+| **Chat Completion Request** | Server-proxied request to API | Response text, usage stats |
+| **Model Selection** | Any OpenAI-compatible model | Model name in response |
+| **System + User Prompts** | Custom message array | AI response |
+| **Temperature & Max Tokens** | Inference parameters | Affects response |
+| **Skip SSL Verification** | For MaaS/internal endpoints | `undici` bypasses SSL check |
+| **API Key Forwarding** | Bearer token authorization | Secure header forwarding |
+| **Base URL Flexibility** | OpenAI, Azure, local LLMs, MaaS | URL + `/v1/chat/completions` |
+| **Input Validation** | Missing baseUrl, apiKey, model | 400 Bad Request |
+| **Non-JSON Response Handling** | Error pages from gateways | Error with preview text |
+| **API Error Handling** | Provider-specific errors | Error message extracted |
+
+**Advantages:**
+- ✅ No CORS restrictions
+- ✅ Can skip SSL verification for internal/dev endpoints
+- ✅ Secure: API keys never exposed to browser network tab
+
+---
+
+## Quick Test Presets (API Testing)
+
+Pre-configured endpoints for rapid testing:
+
+| Preset | URL | Method | Purpose |
+|--------|-----|--------|---------|
+| JSONPlaceholder - Posts | `https://jsonplaceholder.typicode.com/posts/1` | GET | Fetch single post |
+| JSONPlaceholder - Users | `https://jsonplaceholder.typicode.com/users` | GET | List users |
+| JSONPlaceholder - Create Post | `https://jsonplaceholder.typicode.com/posts` | POST | Create resource |
+| HTTPBin - GET | `https://httpbin.org/get` | GET | Echo request data |
+| HTTPBin - POST | `https://httpbin.org/post` | POST | Echo POST data |
+| HTTPBin - Status 200 | `https://httpbin.org/status/200` | GET | Test success |
+| HTTPBin - Status 404 | `https://httpbin.org/status/404` | GET | Test not found |
+| HTTPBin - Status 500 | `https://httpbin.org/status/500` | GET | Test server error |
+| HTTPBin - Delay 2s | `https://httpbin.org/delay/2` | GET | Test timeout handling |
+| ReqRes - Users | `https://reqres.in/api/users?page=1` | GET | Paginated list |
+| ReqRes - Create User | `https://reqres.in/api/users` | POST | Create user |
+| Dog CEO - Random Dog | `https://dog.ceo/api/breeds/image/random` | GET | Image URL response |
+| Cat Facts - Random | `https://catfact.ninja/fact` | GET | Text response |
+
+---
+
+## Feature Comparison Matrix
+
+| Feature | API Client | API Server | OpenAI Client | OpenAI Server |
+|---------|:----------:|:----------:|:-------------:|:-------------:|
+| Direct browser request | ✅ | ❌ | ✅ | ❌ |
+| Server-proxied request | ❌ | ✅ | ❌ | ✅ |
+| CORS-free | ❌ | ✅ | ❌ | ✅ |
+| Skip SSL verification | ❌ | ✅ | ❌ | ✅ |
+| Custom headers | ✅ | ✅ | N/A | N/A |
+| Request body | ✅ | ✅ | ✅ | ✅ |
+| Configurable timeout | ✅ | ✅ | ❌ | ❌ |
+| Preset endpoints | ✅ | ✅ | ❌ | ❌ |
+| API key protection | ❌ | ✅ | ❌ | ✅ |
+
+---
+
+## When to Use Each Mode
+
+### Use Client Mode when:
+- Testing public CORS-enabled APIs
+- Debugging browser-specific behavior
+- Quick connectivity checks
+- No sensitive credentials involved
+
+### Use Server Mode when:
+- Testing internal/private endpoints
+- Working with self-signed SSL certificates
+- Need to bypass CORS restrictions
+- API keys should not be visible in browser dev tools
+- Testing MaaS endpoints behind corporate firewalls
+
+---
+
+## Getting Started
 
 ```bash
+# Install dependencies
 npm install
+
+# Run development server
 npm run dev
+
+# Build for production
+npm run build
+
+# Start production server
+npm start
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to view the app.
-
----
-
-## Kubernetes Deployment Guide
-
-This guide covers deploying the app to a Kubernetes cluster using the Kubernetes Dashboard (portal UI).
-
-### Prerequisites
-
-- Access to a Docker registry (Docker Hub, private registry, GCR, ECR, etc.)
-- Access to the Kubernetes Dashboard/Portal
-- Docker installed locally for building the image
-
-### Step 1: Build and Push Docker Image
-
-#### Option A: Docker Hub (Public)
+## Docker
 
 ```bash
-# Build the Docker image
-docker build -t yourusername/connection-tester:latest .
+# Build image
+docker build -t endpoint-tester .
 
-# Login to Docker Hub
-docker login
-
-# Push to Docker Hub
-docker push yourusername/connection-tester:latest
+# Run container
+docker run -p 3000:3000 endpoint-tester
 ```
 
-#### Option B: Private Registry
+## Kubernetes
 
 ```bash
-# Build the image
-docker build -t registry.example.com/connection-tester:latest .
+# Deploy all resources
+kubectl apply -f k8s/all-in-one.yaml
 
-# Login to your registry
-docker login registry.example.com
-
-# Push to registry
-docker push registry.example.com/connection-tester:latest
-```
-
-#### Option C: Google Container Registry (GCR)
-
-```bash
-# Build and tag
-docker build -t gcr.io/YOUR_PROJECT_ID/connection-tester:latest .
-
-# Push to GCR
-docker push gcr.io/YOUR_PROJECT_ID/connection-tester:latest
-```
-
-### Step 2: Update Kubernetes Manifests
-
-Edit `k8s/deployment.yaml` or `k8s/all-in-one.yaml` and replace `YOUR_DOCKER_REGISTRY/connection-tester:latest` with your actual image path:
-
-```yaml
-image: yourusername/connection-tester:latest
-```
-
-### Step 3: Deploy via Kubernetes Dashboard
-
-Since you're using the Kubernetes portal/dashboard without CLI access:
-
-#### Method 1: Create from YAML (Recommended)
-
-1. Open the Kubernetes Dashboard
-2. Click the **"+"** button in the top-right corner (Create new resource)
-3. Select **"Create from input"** or **"Create from file"**
-4. Copy the contents of `k8s/all-in-one.yaml` (after updating the image path)
-5. Paste into the YAML editor
-6. Click **"Upload"** or **"Deploy"**
-
-#### Method 2: Create Deployment via Form
-
-1. In the Kubernetes Dashboard, go to **Workloads > Deployments**
-2. Click **"+"** to create a new deployment
-3. Fill in the form:
-   - **App name**: `connection-tester-app`
-   - **Container image**: `yourusername/connection-tester:latest`
-   - **Number of pods**: `1`
-   - **Service**: External, port `80`, target port `3000`
-4. Click **Deploy**
-
-#### Method 3: Create Resources Separately
-
-**Create Deployment:**
-1. Go to **Workloads > Deployments**
-2. Click **"+"** and use YAML from `k8s/deployment.yaml`
-
-**Create Service:**
-1. Go to **Service > Services**
-2. Click **"+"** and use YAML from `k8s/service.yaml`
-
-### Step 4: Verify Deployment
-
-1. Go to **Workloads > Deployments** in the dashboard
-2. Look for `connection-tester-app` with a green status indicator
-3. Check **Pods** to ensure the pod is running
-4. Go to **Service > Services** to find the assigned NodePort
-
-### Step 5: Access the Application
-
-Once deployed, access the app via:
-- **NodePort**: `http://<node-ip>:<nodeport>`
-- Check the Service details in the dashboard for the assigned port
-
----
-
-## Kubernetes Manifest Files
-
-| File | Description |
-|------|-------------|
-| `k8s/deployment.yaml` | Deployment configuration only |
-| `k8s/service.yaml` | Service configuration only |
-| `k8s/all-in-one.yaml` | Combined deployment + service |
-
-### Resource Configuration
-
-Default resource limits:
-- CPU: 100m request, 500m limit
-- Memory: 128Mi request, 512Mi limit
-
-Modify these in the deployment YAML based on your cluster capacity.
-
----
-
-## Private Registry Authentication
-
-If your registry requires authentication, create a Secret in Kubernetes:
-
-1. In the dashboard, go to **Config and Storage > Secrets**
-2. Create a new secret of type `kubernetes.io/dockerconfigjson`
-3. Name it `registry-secret`
-4. Add your registry credentials
-5. Uncomment the `imagePullSecrets` section in the deployment YAML:
-
-```yaml
-imagePullSecrets:
-  - name: registry-secret
-```
-
----
-
-## Troubleshooting
-
-### Pod not starting
-- Check pod logs in the dashboard: **Workloads > Pods > [pod-name] > Logs**
-- Verify the image name is correct and accessible
-- Check if imagePullSecrets is needed for private registries
-
-### Service not accessible
-- Verify the service is created: **Service > Services**
-- Check the NodePort assignment
-- Ensure firewall rules allow traffic to the NodePort
-
-### Image pull errors
-- Verify the image exists in your registry
-- Check registry authentication
-- Ensure the cluster can reach your registry
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────┐
-│                  Kubernetes Cluster                  │
-│  ┌────────────────────────────────────────────────┐ │
-│  │              Service (NodePort)                 │ │
-│  │                   Port: 80                      │ │
-│  └──────────────────────┬─────────────────────────┘ │
-│                         │                           │
-│  ┌──────────────────────▼─────────────────────────┐ │
-│  │               Deployment                        │ │
-│  │  ┌──────────────────────────────────────────┐  │ │
-│  │  │              Pod                          │  │ │
-│  │  │  ┌────────────────────────────────────┐  │  │ │
-│  │  │  │     connection-tester container    │  │  │ │
-│  │  │  │          Port: 3000                │  │  │ │
-│  │  │  └────────────────────────────────────┘  │  │ │
-│  │  └──────────────────────────────────────────┘  │ │
-│  └────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────┘
+# Or deploy individually
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+kubectl apply -f k8s/ingress.yaml
 ```
