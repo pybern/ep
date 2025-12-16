@@ -6,12 +6,13 @@ import { ApiTester } from "@/components/testers/api-tester"
 import { JdbcTester } from "@/components/testers/jdbc-tester"
 import { OdbcTester } from "@/components/testers/odbc-tester"
 import { OpenAiTester } from "@/components/testers/openai-tester"
+import { OidcTester } from "@/components/testers/oidc-tester"
 import { TestHistory } from "@/components/test-history"
-import { Shield, Zap, Globe, Database, Server, Sparkles } from "lucide-react"
+import { Shield, Zap, Globe, Database, Server, Sparkles, KeyRound } from "lucide-react"
 
 export type TestResult = {
   id: string
-  type: "api" | "jdbc" | "odbc" | "openai"
+  type: "api" | "jdbc" | "odbc" | "openai" | "oidc"
   connectionString: string
   status: "success" | "error" | "pending"
   message: string
@@ -100,6 +101,13 @@ export function ConnectionTester() {
                     <Sparkles className="h-4 w-4" />
                     OpenAI API
                   </TabsTrigger>
+                  <TabsTrigger
+                    value="oidc"
+                    className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground gap-2"
+                  >
+                    <KeyRound className="h-4 w-4" />
+                    OIDC SSO
+                  </TabsTrigger>
                 </TabsList>
               </div>
 
@@ -115,6 +123,9 @@ export function ConnectionTester() {
                 </TabsContent>
                 <TabsContent value="openai" className="mt-0">
                   <OpenAiTester onResult={addResult} />
+                </TabsContent>
+                <TabsContent value="oidc" className="mt-0">
+                  <OidcTester onResult={addResult} />
                 </TabsContent>
               </div>
             </Tabs>
