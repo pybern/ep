@@ -115,6 +115,21 @@ export function ApiTester({ onResult }: Props) {
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<Omit<TestResult, "id" | "timestamp"> | null>(null)
 
+  const hasContentTypeHeader = (headerObj: Record<string, string>) =>
+    Object.keys(headerObj).some((k) => k.trim().toLowerCase() === "content-type")
+
+  const applyDefaultContentTypeForBody = (headerObj: Record<string, string>, bodyText: string) => {
+    if (!bodyText.trim() || hasContentTypeHeader(headerObj)) return headerObj
+
+    // If the body is valid JSON, default to application/json; otherwise send as text/plain.
+    try {
+      JSON.parse(bodyText)
+      return { ...headerObj, "Content-Type": "application/json" }
+    } catch {
+      return { ...headerObj, "Content-Type": "text/plain; charset=utf-8" }
+    }
+  }
+
   const loadPreset = (preset: (typeof MOCK_ENDPOINTS)[number]) => {
     setUrl(preset.url)
     setMethod(preset.method)
@@ -144,13 +159,17 @@ export function ApiTester({ onResult }: Props) {
     const startTime = performance.now()
 
     try {
-      const headerObj: Record<string, string> = {}
+      let headerObj: Record<string, string> = {}
       headers.forEach((h) => {
         if (h.key.trim()) headerObj[h.key] = h.value
       })
 
       const controller = new AbortController()
       const timeoutId = window.setTimeout(() => controller.abort(), Number.parseInt(timeout))
+
+      if (method !== "GET" && method !== "HEAD" && body.trim()) {
+        headerObj = applyDefaultContentTypeForBody(headerObj, body)
+      }
 
       const fetchOptions: RequestInit = {
         method,
@@ -194,6 +213,8 @@ export function ApiTester({ onResult }: Props) {
           status: response.status,
           statusText: response.statusText,
           headers: Object.fromEntries(response.headers.entries()),
+          requestHeaders: headerObj,
+          requestBody: method !== "GET" && method !== "HEAD" && body.trim() ? body : undefined,
           method,
           mode: "client",
           responseBody,
@@ -227,10 +248,14 @@ export function ApiTester({ onResult }: Props) {
     const startTime = performance.now()
 
     try {
-      const headerObj: Record<string, string> = {}
+      let headerObj: Record<string, string> = {}
       headers.forEach((h) => {
         if (h.key.trim()) headerObj[h.key] = h.value
       })
+
+      if (method !== "GET" && method !== "HEAD" && body.trim()) {
+        headerObj = applyDefaultContentTypeForBody(headerObj, body)
+      }
 
       const response = await fetch("/api/proxy", {
         method: "POST",
@@ -268,6 +293,8 @@ export function ApiTester({ onResult }: Props) {
           status: data.status,
           statusText: data.statusText,
           headers: data.headers,
+          requestHeaders: headerObj,
+          requestBody: method !== "GET" && method !== "HEAD" && body.trim() ? body : undefined,
           method,
           mode: "server",
           skipSslVerify,

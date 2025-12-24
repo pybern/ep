@@ -1,5 +1,8 @@
 import { Agent, fetch as undiciFetch } from "undici"
 
+const hasContentTypeHeader = (headers: Record<string, string>) =>
+  Object.keys(headers).some((k) => k.trim().toLowerCase() === "content-type")
+
 export async function POST(req: Request) {
   try {
     const { url, method, headers, body, timeout, skipSslVerify } = await req.json()
@@ -26,6 +29,11 @@ export async function POST(req: Request) {
 
     try {
       let response: Response
+      const targetHeaders: Record<string, string> = headers || {}
+      // If callers pass a JSON object body but forget the Content-Type, default it.
+      if (body && typeof body !== "string" && !hasContentTypeHeader(targetHeaders)) {
+        targetHeaders["Content-Type"] = "application/json"
+      }
 
       // Use undici for HTTPS requests when SSL verification should be skipped
       if (skipSslVerify && url.startsWith("https://")) {
@@ -37,7 +45,7 @@ export async function POST(req: Request) {
 
         const undiciFetchOptions: Parameters<typeof undiciFetch>[1] = {
           method: method || "GET",
-          headers: headers || {},
+          headers: targetHeaders,
           signal: controller.signal,
           dispatcher,
         }
@@ -51,7 +59,7 @@ export async function POST(req: Request) {
         // Use standard fetch for HTTP or when SSL verification is enabled
         const fetchOptions: RequestInit = {
           method: method || "GET",
-          headers: headers || {},
+          headers: targetHeaders,
           signal: controller.signal,
         }
 
