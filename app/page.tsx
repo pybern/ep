@@ -1,79 +1,128 @@
+"use client"
+
+import { useState, useEffect, useRef, useCallback } from "react"
 import { FloatingWidget } from "@/components/floating-widget"
+import { SqlEditor } from "@/components/sql-editor"
+import { DremioCatalog } from "@/components/dremio-catalog"
+import { DremioCredentials, getDremioCredentials } from "@/lib/credential-store"
+import { Database, PanelLeftClose, PanelLeft } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 
 export default function Page() {
+  const [credentials, setCredentials] = useState<DremioCredentials | null>(null)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [isLoading, setIsLoading] = useState(true)
+  const openSettingsRef = useRef<(() => void) | null>(null)
+
+  // Load credentials on mount
+  useEffect(() => {
+    const stored = getDremioCredentials()
+    setCredentials(stored)
+    setIsLoading(false)
+  }, [])
+
+  const handleCredentialsChange = useCallback((creds: DremioCredentials | null) => {
+    setCredentials(creds)
+  }, [])
+
+  const handleOpenSettings = useCallback(() => {
+    openSettingsRef.current?.()
+  }, [])
+
+  const handleTableSelect = useCallback((tablePath: string) => {
+    // Insert table path at cursor position in SQL editor
+    const windowWithInsert = window as unknown as { insertTableAtCursor?: (path: string) => void }
+    if (windowWithInsert.insertTableAtCursor) {
+      windowWithInsert.insertTableAtCursor(tablePath)
+    }
+  }, [])
+
+  if (isLoading) {
+    return (
+      <main className="fixed inset-0 bg-background flex items-center justify-center">
+        <Database className="h-8 w-8 text-primary animate-pulse" />
+      </main>
+    )
+  }
+
   return (
-    <main className="fixed inset-0 overflow-hidden bg-background">
-      {/* Background */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        {/* Gradient orbs */}
-        <div className="absolute top-1/3 -left-48 w-[500px] h-[500px] bg-primary/6 rounded-full blur-3xl" />
-        <div className="absolute bottom-1/3 -right-48 w-[400px] h-[400px] bg-primary/4 rounded-full blur-3xl" />
-        
-        {/* Grid pattern */}
-        <div 
-          className="absolute inset-0 opacity-[0.015]"
-          style={{
-            backgroundImage: `
-              linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px),
-              linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)
-            `,
-            backgroundSize: '80px 80px'
-          }}
-        />
+    <main className="fixed inset-0 overflow-hidden bg-background flex">
+      {/* Sidebar - Dremio Catalog */}
+      <div 
+        className={cn(
+          "h-full border-r border-border/50 bg-card/50 flex flex-col shrink-0 transition-all duration-300",
+          sidebarOpen ? "w-64" : "w-0"
+        )}
+      >
+        {sidebarOpen && (
+          <DremioCatalog 
+            credentials={credentials} 
+            onTableSelect={handleTableSelect}
+            onOpenSettings={handleOpenSettings}
+          />
+        )}
       </div>
 
-      {/* Content */}
-      <div className="relative h-full flex flex-col items-center justify-center px-6">
-        <div className="text-center max-w-2xl">
-          {/* Logo */}
-          <div className="mb-8">
-            <h1 className="text-6xl sm:text-7xl font-light tracking-tighter text-foreground">
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col min-w-0 h-full">
+        {/* Header */}
+        <header className="h-12 border-b border-border/50 flex items-center px-4 gap-3 shrink-0 bg-card/30">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+          >
+            {sidebarOpen ? (
+              <PanelLeftClose className="h-4 w-4" />
+            ) : (
+              <PanelLeft className="h-4 w-4" />
+            )}
+          </Button>
+          
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-semibold tracking-tight">
               <span className="font-semibold">ep</span>
               <span className="text-primary">.</span>
             </h1>
-            <p className="text-sm text-muted-foreground/70 mt-2 tracking-wide uppercase">
-              endpoint probe
-            </p>
+            <span className="text-xs text-muted-foreground">SQL Workbench</span>
           </div>
 
-          {/* Tagline */}
-          <p className="text-lg sm:text-xl text-muted-foreground mb-8 leading-relaxed">
-            Test your API endpoints, JDBC, ODBC, and OpenAI connections
-            <br className="hidden sm:block" />
-            <span className="text-foreground/80">securely and instantly.</span>
-          </p>
+          <div className="flex-1" />
 
-          {/* Features */}
-          <div className="flex flex-wrap justify-center gap-4 text-xs text-muted-foreground/60">
-            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-accent/30 border border-border/30">
-              <span className="h-1.5 w-1.5 rounded-full bg-primary/60" />
-              Zero persistence
+          {credentials ? (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
+              <span className="truncate max-w-[200px]">{credentials.endpoint}</span>
             </div>
-            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-accent/30 border border-border/30">
-              <span className="h-1.5 w-1.5 rounded-full bg-primary/60" />
-              Client-side secure
-            </div>
-            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-accent/30 border border-border/30">
-              <span className="h-1.5 w-1.5 rounded-full bg-primary/60" />
-              Open source
-            </div>
-          </div>
+          ) : (
+            <Button 
+              variant="outline" 
+              size="sm" 
+              className="h-7 text-xs gap-1.5"
+              onClick={handleOpenSettings}
+            >
+              <Database className="h-3 w-3" />
+              Configure Dremio
+            </Button>
+          )}
+        </header>
 
-          {/* CTA hint */}
-          <div className="mt-12 flex items-center justify-center gap-2 text-sm text-muted-foreground/50">
-            <span>Click the</span>
-            <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-primary/20 text-primary">
-              <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-            </span>
-            <span>button to get started</span>
-          </div>
+        {/* SQL Editor */}
+        <div className="flex-1 min-h-0">
+          <SqlEditor 
+            credentials={credentials} 
+            onInsertTable={handleTableSelect}
+          />
         </div>
       </div>
 
       {/* Floating Widget */}
-      <FloatingWidget />
+      <FloatingWidget 
+        onCredentialsChange={handleCredentialsChange}
+        openSettingsRef={openSettingsRef}
+      />
     </main>
   )
 }

@@ -8,8 +8,10 @@ import { JdbcTester } from "@/components/testers/jdbc-tester"
 import { OdbcTester } from "@/components/testers/odbc-tester"
 import { OpenAiTester } from "@/components/testers/openai-tester"
 import { TestHistory } from "@/components/test-history"
-import { Shield, Zap, Globe, Database, Server, Sparkles, X, ChevronDown, ChevronUp } from "lucide-react"
+import { CredentialSettings } from "@/components/credential-settings"
+import { Shield, Zap, Globe, Database, Server, Sparkles, X, ChevronDown, ChevronUp, Settings } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { DremioCredentials } from "@/lib/credential-store"
 
 export type TestResult = {
   id: string
@@ -24,6 +26,8 @@ export type TestResult = {
 
 interface FloatingWidgetProps {
   defaultOpen?: boolean
+  onCredentialsChange?: (credentials: DremioCredentials | null) => void
+  openSettingsRef?: React.MutableRefObject<(() => void) | null>
 }
 
 const BUTTON_SIZE = 44
@@ -31,10 +35,26 @@ const MARGIN = 12
 
 type Corner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
 
-export function FloatingWidget({ defaultOpen = false }: FloatingWidgetProps) {
+export function FloatingWidget({ defaultOpen = false, onCredentialsChange, openSettingsRef }: FloatingWidgetProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen)
   const [history, setHistory] = useState<TestResult[]>([])
   const [showHistory, setShowHistory] = useState(false)
+  const [activeTab, setActiveTab] = useState("credentials")
+
+  // Expose openSettings function via ref
+  useEffect(() => {
+    if (openSettingsRef) {
+      openSettingsRef.current = () => {
+        setIsOpen(true)
+        setActiveTab("credentials")
+      }
+    }
+    return () => {
+      if (openSettingsRef) {
+        openSettingsRef.current = null
+      }
+    }
+  }, [openSettingsRef])
   const [position, setPosition] = useState({ x: 0, y: 0 })
   const [isDragging, setIsDragging] = useState(false)
   const [isSnapping, setIsSnapping] = useState(false)
@@ -236,9 +256,16 @@ export function FloatingWidget({ defaultOpen = false }: FloatingWidgetProps) {
             </div>
 
             {/* Tabs */}
-            <Tabs defaultValue="api" className="flex-1 flex flex-col min-h-0 overflow-hidden">
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col min-h-0 overflow-hidden">
               <div className="border-b border-border/50 px-3 shrink-0">
                 <TabsList className="h-9 bg-transparent gap-1">
+                  <TabsTrigger
+                    value="credentials"
+                    className="text-xs data-[state=active]:bg-accent/80 data-[state=active]:text-accent-foreground gap-1.5 px-2.5 h-7"
+                  >
+                    <Settings className="h-3 w-3" />
+                    Credentials
+                  </TabsTrigger>
                   <TabsTrigger
                     value="api"
                     className="text-xs data-[state=active]:bg-accent/80 data-[state=active]:text-accent-foreground gap-1.5 px-2.5 h-7"
@@ -272,6 +299,9 @@ export function FloatingWidget({ defaultOpen = false }: FloatingWidgetProps) {
 
               <div className="flex-1 overflow-y-auto scrollbar-subtle">
                 <div className="p-4">
+                  <TabsContent value="credentials" className="mt-0">
+                    <CredentialSettings onCredentialsChange={onCredentialsChange} />
+                  </TabsContent>
                   <TabsContent value="api" className="mt-0">
                     <ApiTester onResult={addResult} />
                   </TabsContent>
