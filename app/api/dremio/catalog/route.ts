@@ -3,7 +3,7 @@ import { Agent, fetch as undiciFetch } from "undici"
 
 export async function POST(req: NextRequest) {
   try {
-    const { endpoint, pat, path, sslVerify } = await req.json()
+    const { endpoint, pat, path, id, sslVerify } = await req.json()
 
     if (!endpoint || !pat) {
       return new Response(
@@ -19,9 +19,17 @@ export async function POST(req: NextRequest) {
     }
 
     // Build the catalog URL
+    // Dremio 26.x API Reference:
+    // - GET /api/v3/catalog - Lists all top-level catalog containers
+    // - GET /api/v3/catalog/{id} - Gets a catalog entity by ID (includes children for containers)
+    // - GET /api/v3/catalog/by-path/{path} - Gets a catalog entity by path
     let catalogUrl = `${baseUrl}/api/v3/catalog`
-    if (path) {
-      // If a path is provided, fetch that specific catalog item
+    if (id) {
+      // If an ID is provided, fetch that specific catalog entity by ID
+      // This is the preferred method for navigating folder trees as it returns children
+      catalogUrl = `${baseUrl}/api/v3/catalog/${encodeURIComponent(id)}`
+    } else if (path) {
+      // If a path is provided, fetch that specific catalog item by path
       catalogUrl = `${baseUrl}/api/v3/catalog/by-path/${encodeURIComponent(path)}`
     }
 

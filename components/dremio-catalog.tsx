@@ -1,5 +1,25 @@
 "use client"
 
+/**
+ * Dremio Catalog Browser Component
+ * 
+ * This component provides a tree-based navigation interface for the Dremio catalog.
+ * It uses the Dremio 26.x REST API to fetch and display catalog entities.
+ * 
+ * API Reference (Dremio 26.x):
+ * - GET /api/v3/catalog - Lists all top-level catalog containers (spaces, sources, home)
+ * - GET /api/v3/catalog/{id} - Gets a catalog entity by ID, including its children
+ * - GET /api/v3/catalog/by-path/{path} - Gets a catalog entity by path
+ * 
+ * The folder tree navigation uses the GET /api/v3/catalog/{id} endpoint to fetch
+ * children of containers. This is the recommended method as it:
+ * - Returns the full entity details along with children
+ * - Handles special characters in names correctly
+ * - Is more reliable than path-based lookups
+ * 
+ * @see https://docs.dremio.com/current/reference/api/catalog/
+ */
+
 import { useState, useEffect, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { 
@@ -24,15 +44,33 @@ interface DremioCatalogProps {
   onOpenSettings?: () => void
 }
 
+/**
+ * Represents a catalog item from the Dremio API
+ * 
+ * Dremio catalog entities can be:
+ * - CONTAINER: Spaces, Sources, Folders, Home - can contain children
+ * - DATASET: Virtual datasets (views) or physical datasets (tables)
+ * - FILE: Individual files in a source
+ * - FUNCTION: User-defined functions
+ */
 interface CatalogItem {
+  /** Unique identifier for the catalog entity - used for fetching children via /api/v3/catalog/{id} */
   id: string
+  /** Path components representing the location in the catalog hierarchy */
   path: string[]
+  /** Entity tag for concurrency control */
   tag?: string
+  /** Primary type of the catalog entity */
   type: "CONTAINER" | "DATASET" | "FILE" | "FOLDER" | "HOME" | "SOURCE" | "SPACE" | "FUNCTION"
+  /** Sub-type for CONTAINER entities */
   containerType?: "SPACE" | "SOURCE" | "FOLDER" | "HOME"
+  /** Sub-type for DATASET entities */
   datasetType?: "VIRTUAL" | "PROMOTED" | "PHYSICAL_DATASET_HOME_FILE" | "PHYSICAL_DATASET_HOME_FOLDER" | "PHYSICAL_DATASET_SOURCE_FILE" | "PHYSICAL_DATASET_SOURCE_FOLDER" | "PHYSICAL_DATASET"
+  /** Child entities (populated when container is expanded) */
   children?: CatalogItem[]
+  /** UI state: currently loading children */
   isLoading?: boolean
+  /** UI state: children have been fetched */
   isLoaded?: boolean
 }
 
@@ -225,6 +263,15 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
     }
   }, [credentials])
 
+  /**
+   * Load children of a catalog container by fetching via the item's ID
+   * 
+   * According to Dremio 26.x API Reference:
+   * - GET /api/v3/catalog/{id} returns a catalog entity and its children
+   * - Children are included in the response for CONTAINER types (SPACE, SOURCE, FOLDER, HOME)
+   * - Using ID is the preferred method for navigating the folder tree as it's more reliable
+   *   than path-based lookups and handles special characters in names correctly
+   */
   const loadChildren = useCallback(async (item: CatalogItem) => {
     if (!credentials) return
 
@@ -232,13 +279,15 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
     setCatalog(prev => updateItemInTree(prev, item.id, { isLoading: true }))
 
     try {
+      // Use the item's ID to fetch the catalog entity and its children
+      // Dremio 26.x API: GET /api/v3/catalog/{id}
       const response = await fetch("/api/dremio/catalog", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           endpoint: credentials.endpoint,
           pat: credentials.pat,
-          path: item.path.join("/"),
+          id: item.id, // Use ID-based lookup for reliable child fetching
           sslVerify: credentials.sslVerify
         })
       })
@@ -249,7 +298,8 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
         throw new Error(data.error || "Failed to fetch children")
       }
 
-      // Transform children
+      // Transform children from the catalog entity response
+      // The children array contains references to child entities
       const children: CatalogItem[] = (data.children || []).map((child: Record<string, unknown>) => ({
         id: child.id as string,
         path: child.path as string[],
