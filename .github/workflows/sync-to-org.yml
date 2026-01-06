@@ -1,5 +1,5 @@
 # .github/workflows/sync-to-org.yml
-name: Sync to Organization Repo
+name: Sync to Organization Repo (nggdim)
 
 on:
   push:
