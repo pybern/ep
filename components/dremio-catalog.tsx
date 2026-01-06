@@ -193,7 +193,8 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           endpoint: credentials.endpoint,
-          pat: credentials.pat
+          pat: credentials.pat,
+          sslVerify: credentials.sslVerify
         })
       })
 
@@ -237,7 +238,8 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
         body: JSON.stringify({
           endpoint: credentials.endpoint,
           pat: credentials.pat,
-          path: item.path.join("/")
+          path: item.path.join("/"),
+          sslVerify: credentials.sslVerify
         })
       })
 

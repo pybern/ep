@@ -102,7 +102,8 @@ export function SqlEditor({ credentials, onInsertTable }: SqlEditorProps) {
         body: JSON.stringify({
           endpoint: credentials.endpoint,
           pat: credentials.pat,
-          sql: sql.trim()
+          sql: sql.trim(),
+          sslVerify: credentials.sslVerify
         })
       })
 

@@ -4,6 +4,7 @@ export interface DremioCredentials {
   endpoint: string
   pat: string
   projectId?: string
+  sslVerify?: boolean
 }
 
 export interface StoredCredentials {

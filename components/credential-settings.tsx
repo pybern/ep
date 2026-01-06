@@ -19,7 +19,8 @@ import {
   CheckCircle2, 
   AlertCircle,
   Loader2,
-  Shield
+  Shield,
+  ShieldOff
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -30,6 +31,7 @@ interface CredentialSettingsProps {
 export function CredentialSettings({ onCredentialsChange }: CredentialSettingsProps) {
   const [endpoint, setEndpoint] = useState("")
   const [pat, setPat] = useState("")
+  const [sslVerify, setSslVerify] = useState(true)
   const [showPat, setShowPat] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [isTesting, setIsTesting] = useState(false)
@@ -42,6 +44,7 @@ export function CredentialSettings({ onCredentialsChange }: CredentialSettingsPr
     if (stored) {
       setEndpoint(stored.endpoint)
       setPat(stored.pat)
+      setSslVerify(stored.sslVerify !== false) // Default to true if not set
       setHasStoredCredentials(true)
     }
   }, [])
@@ -52,7 +55,8 @@ export function CredentialSettings({ onCredentialsChange }: CredentialSettingsPr
     setIsSaving(true)
     const credentials: DremioCredentials = {
       endpoint: endpoint.trim(),
-      pat: pat.trim()
+      pat: pat.trim(),
+      sslVerify
     }
     
     saveDremioCredentials(credentials)
@@ -87,7 +91,8 @@ export function CredentialSettings({ onCredentialsChange }: CredentialSettingsPr
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           endpoint: endpoint.trim(),
-          pat: pat.trim()
+          pat: pat.trim(),
+          sslVerify
         })
       })
 
@@ -186,6 +191,41 @@ export function CredentialSettings({ onCredentialsChange }: CredentialSettingsPr
           <p className="text-[10px] text-muted-foreground">
             Generate a PAT from your Dremio account settings
           </p>
+        </div>
+
+        {/* SSL Verification Toggle */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <Label htmlFor="ssl-verify" className="text-sm flex items-center gap-2">
+              {sslVerify ? (
+                <Shield className="h-4 w-4 text-success" />
+              ) : (
+                <ShieldOff className="h-4 w-4 text-warning" />
+              )}
+              SSL Certificate Verification
+            </Label>
+            <Button
+              id="ssl-verify"
+              type="button"
+              variant={sslVerify ? "default" : "outline"}
+              size="sm"
+              onClick={() => setSslVerify(!sslVerify)}
+              className={cn(
+                "h-7 px-3 text-xs",
+                !sslVerify && "border-warning text-warning hover:bg-warning/10"
+              )}
+            >
+              {sslVerify ? "Enabled" : "Disabled"}
+            </Button>
+          </div>
+          {!sslVerify && (
+            <div className="flex items-start gap-2 p-2 rounded-lg bg-warning/10 border border-warning/30">
+              <ShieldOff className="h-3 w-3 text-warning mt-0.5 shrink-0" />
+              <p className="text-[10px] text-warning">
+                SSL verification is disabled. Use only for self-signed certificates in development/testing environments.
+              </p>
+            </div>
+          )}
         </div>
       </div>
 

@@ -1,8 +1,9 @@
 import { NextRequest } from "next/server"
+import { Agent, fetch as undiciFetch } from "undici"
 
 export async function POST(req: NextRequest) {
   try {
-    const { endpoint, pat, path } = await req.json()
+    const { endpoint, pat, path, sslVerify } = await req.json()
 
     if (!endpoint || !pat) {
       return new Response(
@@ -24,13 +25,25 @@ export async function POST(req: NextRequest) {
       catalogUrl = `${baseUrl}/api/v3/catalog/by-path/${encodeURIComponent(path)}`
     }
 
-    const response = await fetch(catalogUrl, {
+    // Create fetch options with optional SSL verification bypass
+    const fetchOptions: Parameters<typeof undiciFetch>[1] = {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${pat}`,
         "Content-Type": "application/json",
       },
-    })
+    }
+
+    // If SSL verification is disabled, use a custom agent
+    if (sslVerify === false) {
+      fetchOptions.dispatcher = new Agent({
+        connect: {
+          rejectUnauthorized: false,
+        },
+      })
+    }
+
+    const response = await undiciFetch(catalogUrl, fetchOptions)
 
     if (!response.ok) {
       const errorText = await response.text()

@@ -1,8 +1,9 @@
 import { NextRequest } from "next/server"
+import { Agent, fetch as undiciFetch } from "undici"
 
 export async function POST(req: NextRequest) {
   try {
-    const { endpoint, pat, sql } = await req.json()
+    const { endpoint, pat, sql, sslVerify } = await req.json()
 
     if (!endpoint || !pat) {
       return new Response(
@@ -24,8 +25,23 @@ export async function POST(req: NextRequest) {
       baseUrl = baseUrl.slice(0, -1)
     }
 
+    // Create a custom agent if SSL verification is disabled
+    const dispatcher = sslVerify === false
+      ? new Agent({ connect: { rejectUnauthorized: false } })
+      : undefined
+
+    // Helper function for fetch with optional SSL bypass
+    const fetchWithOptions = (url: string, options: { method: string; headers: Record<string, string>; body?: string }) => {
+      return undiciFetch(url, {
+        method: options.method,
+        headers: options.headers,
+        body: options.body,
+        dispatcher,
+      })
+    }
+
     // Submit SQL job
-    const submitResponse = await fetch(`${baseUrl}/api/v3/sql`, {
+    const submitResponse = await fetchWithOptions(`${baseUrl}/api/v3/sql`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${pat}`,
@@ -45,7 +61,7 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const jobData = await submitResponse.json()
+    const jobData = await submitResponse.json() as { id: string }
     const jobId = jobData.id
 
     // Poll for job completion
@@ -64,7 +80,7 @@ export async function POST(req: NextRequest) {
       await new Promise(resolve => setTimeout(resolve, 1000))
       attempts++
 
-      const statusResponse = await fetch(`${baseUrl}/api/v3/job/${jobId}`, {
+      const statusResponse = await fetchWithOptions(`${baseUrl}/api/v3/job/${jobId}`, {
         method: "GET",
         headers: {
           "Authorization": `Bearer ${pat}`,
@@ -83,13 +99,13 @@ export async function POST(req: NextRequest) {
         )
       }
 
-      const statusData = await statusResponse.json()
+      const statusData = await statusResponse.json() as { jobState: string }
       jobStatus = statusData.jobState
     }
 
     if (jobStatus === "FAILED" || jobStatus === "CANCELED") {
       // Get job details for error info
-      const detailsResponse = await fetch(`${baseUrl}/api/v3/job/${jobId}`, {
+      const detailsResponse = await fetchWithOptions(`${baseUrl}/api/v3/job/${jobId}`, {
         method: "GET",
         headers: {
           "Authorization": `Bearer ${pat}`,
@@ -97,7 +113,7 @@ export async function POST(req: NextRequest) {
         },
       })
       
-      const detailsData = await detailsResponse.json()
+      const detailsData = await detailsResponse.json() as { errorMessage?: string }
       return new Response(
         JSON.stringify({
           error: `Query ${jobStatus.toLowerCase()}`,
@@ -108,7 +124,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Get results
-    const resultsResponse = await fetch(`${baseUrl}/api/v3/job/${jobId}/results?offset=0&limit=500`, {
+    const resultsResponse = await fetchWithOptions(`${baseUrl}/api/v3/job/${jobId}/results?offset=0&limit=500`, {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${pat}`,
@@ -127,7 +143,7 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const resultsData = await resultsResponse.json()
+    const resultsData = await resultsResponse.json() as { rowCount: number; schema: unknown; rows: unknown[] }
 
     return new Response(JSON.stringify({
       jobId,
