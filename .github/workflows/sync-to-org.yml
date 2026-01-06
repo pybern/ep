@@ -20,6 +20,9 @@ jobs:
         env:
           PAT: ${{ secrets.ORG_REPO_PAT }}
         run: |
-          git remote remove org || true
-          git remote add org https://x-access-token:${PAT}@github.com/nggdim/ep.git
+          if git remote get-url org >/dev/null 2>&1; then
+            git remote set-url org https://x-access-token:${PAT}@github.com/nggdim/ep. git
+          else
+            git remote add org https://x-access-token:${PAT}@github.com/nggdim/ep.git
+          fi
           git push org main --force
