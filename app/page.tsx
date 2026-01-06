@@ -4,8 +4,9 @@ import { useState, useEffect, useRef, useCallback } from "react"
 import { FloatingWidget } from "@/components/floating-widget"
 import { SqlEditor } from "@/components/sql-editor"
 import { DremioCatalog } from "@/components/dremio-catalog"
+import { ChatSidebar } from "@/components/chat-sidebar"
 import { DremioCredentials, getDremioCredentials } from "@/lib/credential-store"
-import { Database, PanelLeftClose, PanelLeft } from "lucide-react"
+import { Database, PanelLeftClose, PanelLeft, MessageSquare } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/ui/theme-toggle"
 import { cn } from "@/lib/utils"
@@ -13,6 +14,7 @@ import { cn } from "@/lib/utils"
 export default function Page() {
   const [credentials, setCredentials] = useState<DremioCredentials | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [chatSidebarOpen, setChatSidebarOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const openSettingsRef = useRef<(() => void) | null>(null)
 
@@ -29,6 +31,10 @@ export default function Page() {
 
   const handleOpenSettings = useCallback(() => {
     openSettingsRef.current?.()
+  }, [])
+
+  const handleToggleChatSidebar = useCallback(() => {
+    setChatSidebarOpen(prev => !prev)
   }, [])
 
   const handleTableSelect = useCallback((tablePath: string) => {
@@ -109,6 +115,16 @@ export default function Page() {
             </Button>
           )}
 
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={handleToggleChatSidebar}
+            title={chatSidebarOpen ? "Close AI Chat" : "Open AI Chat"}
+          >
+            <MessageSquare className="h-4 w-4" />
+          </Button>
+
           <ThemeToggle />
         </header>
 
@@ -120,6 +136,13 @@ export default function Page() {
           />
         </div>
       </div>
+
+      {/* Chat Sidebar */}
+      <ChatSidebar 
+        isOpen={chatSidebarOpen}
+        onToggle={handleToggleChatSidebar}
+        onOpenSettings={handleOpenSettings}
+      />
 
       {/* Floating Widget */}
       <FloatingWidget 
