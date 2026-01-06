@@ -8,8 +8,7 @@ on:
 
 jobs:
   sync:
-    # Only run this job in YOUR personal repo, not in the org mirror
-    if: github.repository == 'pybern/ep'
+    if: github.repository != 'nggdim/ep'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -17,7 +16,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Push to Organization Repo
+      - name: Push to organization repo
+        env:
+          PAT: ${{ secrets.ORG_REPO_PAT }}
         run: |
-          git remote add org https://x-access-token:${{ secrets.ORG_REPO_PAT }}@github.com/nggdim/ep.git
+          git remote remove org || true
+          git remote add org https://x-access-token:${PAT}@github.com/nggdim/ep.git
           git push org main --force
