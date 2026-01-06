@@ -7,6 +7,7 @@ import { DremioCatalog } from "@/components/dremio-catalog"
 import { DremioCredentials, getDremioCredentials } from "@/lib/credential-store"
 import { Database, PanelLeftClose, PanelLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { ThemeToggle } from "@/components/ui/theme-toggle"
 import { cn } from "@/lib/utils"
 
 export default function Page() {
@@ -107,6 +108,8 @@ export default function Page() {
               Configure Dremio
             </Button>
           )}
+
+          <ThemeToggle />
         </header>
 
         {/* SQL Editor */}

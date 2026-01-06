@@ -33,7 +33,14 @@ import {
   Loader2,
   FileText,
   AlertCircle,
-  Settings
+  Settings,
+  Columns3,
+  Hash,
+  Type,
+  Calendar,
+  ToggleLeft,
+  Binary,
+  List
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { DremioCredentials } from "@/lib/credential-store"
@@ -42,6 +49,21 @@ interface DremioCatalogProps {
   credentials: DremioCredentials | null
   onTableSelect?: (tablePath: string) => void
   onOpenSettings?: () => void
+}
+
+/**
+ * Represents a column/field in a Dremio dataset
+ */
+interface DatasetField {
+  /** Field name */
+  name: string
+  /** Field data type */
+  type: {
+    name: string
+    precision?: number
+    scale?: number
+    subSchema?: DatasetField[]
+  }
 }
 
 /**
@@ -68,6 +90,8 @@ interface CatalogItem {
   datasetType?: "VIRTUAL" | "PROMOTED" | "PHYSICAL_DATASET_HOME_FILE" | "PHYSICAL_DATASET_HOME_FOLDER" | "PHYSICAL_DATASET_SOURCE_FILE" | "PHYSICAL_DATASET_SOURCE_FOLDER" | "PHYSICAL_DATASET"
   /** Child entities (populated when container is expanded) */
   children?: CatalogItem[]
+  /** Dataset fields/columns (populated when dataset is expanded) */
+  fields?: DatasetField[]
   /** UI state: currently loading children */
   isLoading?: boolean
   /** UI state: children have been fetched */
@@ -102,41 +126,123 @@ function CatalogIcon({ item, isExpanded }: { item: CatalogItem; isExpanded: bool
   return <FileText className="h-4 w-4 text-muted-foreground" />
 }
 
+/**
+ * Get icon for column data type
+ */
+function ColumnTypeIcon({ typeName }: { typeName: string }) {
+  const upperType = typeName.toUpperCase()
+  
+  if (upperType.includes("INT") || upperType.includes("DECIMAL") || upperType.includes("FLOAT") || upperType.includes("DOUBLE") || upperType.includes("NUMERIC")) {
+    return <Hash className="h-3 w-3 text-cyan-400" />
+  }
+  if (upperType.includes("VARCHAR") || upperType.includes("CHAR") || upperType.includes("TEXT") || upperType.includes("STRING")) {
+    return <Type className="h-3 w-3 text-emerald-400" />
+  }
+  if (upperType.includes("DATE") || upperType.includes("TIME") || upperType.includes("TIMESTAMP")) {
+    return <Calendar className="h-3 w-3 text-orange-400" />
+  }
+  if (upperType.includes("BOOL")) {
+    return <ToggleLeft className="h-3 w-3 text-pink-400" />
+  }
+  if (upperType.includes("BINARY") || upperType.includes("VARBINARY") || upperType.includes("BYTES")) {
+    return <Binary className="h-3 w-3 text-gray-400" />
+  }
+  if (upperType.includes("LIST") || upperType.includes("ARRAY") || upperType.includes("STRUCT") || upperType.includes("MAP")) {
+    return <List className="h-3 w-3 text-violet-400" />
+  }
+  
+  return <Columns3 className="h-3 w-3 text-muted-foreground" />
+}
+
+/**
+ * Format a column type for display
+ */
+function formatColumnType(type: DatasetField["type"]): string {
+  let result = type.name
+  
+  if (type.precision !== undefined) {
+    if (type.scale !== undefined) {
+      result += `(${type.precision},${type.scale})`
+    } else {
+      result += `(${type.precision})`
+    }
+  }
+  
+  return result
+}
+
+/**
+ * Column display component
+ */
+function ColumnItem({ field, level }: { field: DatasetField; level: number }) {
+  const typeDisplay = formatColumnType(field.type)
+  
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-1.5 py-0.5 px-2 text-xs",
+        "text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors",
+        "group"
+      )}
+      style={{ paddingLeft: `${level * 12 + 20}px` }}
+      title={`${field.name}: ${typeDisplay}`}
+    >
+      <ColumnTypeIcon typeName={field.type.name} />
+      <span className="truncate flex-1">{field.name}</span>
+      <span className="text-[10px] text-muted-foreground/70 group-hover:text-muted-foreground shrink-0">
+        {typeDisplay}
+      </span>
+    </div>
+  )
+}
+
 function CatalogTreeItem({ 
   item, 
   credentials, 
   level = 0,
   onTableSelect,
-  onLoadChildren
+  onLoadChildren,
+  onLoadDatasetDetails
 }: { 
   item: CatalogItem
   credentials: DremioCredentials
   level?: number
   onTableSelect?: (tablePath: string) => void
   onLoadChildren: (item: CatalogItem) => Promise<void>
+  onLoadDatasetDetails: (item: CatalogItem) => Promise<void>
 }) {
   const [isExpanded, setIsExpanded] = useState(false)
-  const canExpand = item.type === "CONTAINER" || (item.type === "DATASET" && item.datasetType !== "VIRTUAL")
+  const isContainer = item.type === "CONTAINER"
   const isDataset = item.type === "DATASET"
+  // All containers can expand, and datasets can expand to show columns
+  const canExpand = isContainer || isDataset
   
   const handleToggle = async () => {
-    if (!canExpand && !isDataset) return
-    
-    if (isDataset && onTableSelect) {
-      onTableSelect(item.path.join("."))
-      return
-    }
+    if (!canExpand) return
     
     const newExpanded = !isExpanded
     setIsExpanded(newExpanded)
     
     if (newExpanded && !item.isLoaded && !item.isLoading) {
-      await onLoadChildren(item)
+      if (isDataset) {
+        // Load dataset details (columns)
+        await onLoadDatasetDetails(item)
+      } else {
+        // Load children for containers
+        await onLoadChildren(item)
+      }
     }
   }
 
   const handleDoubleClick = () => {
     if (isDataset && onTableSelect) {
+      onTableSelect(item.path.join("."))
+    }
+  }
+
+  const handleInsertClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (onTableSelect) {
       onTableSelect(item.path.join("."))
     }
   }
@@ -179,16 +285,27 @@ function CatalogTreeItem({
           {item.path[item.path.length - 1]}
         </span>
         
-        {/* Dataset type badge */}
-        {isDataset && item.datasetType && (
-          <span className="ml-auto text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
-            {item.datasetType === "VIRTUAL" ? "view" : "table"}
-          </span>
+        {/* Dataset type badge and insert button */}
+        {isDataset && (
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              onClick={handleInsertClick}
+              className="text-[10px] text-primary opacity-0 group-hover:opacity-100 transition-opacity hover:underline"
+              title="Insert table name into query"
+            >
+              insert
+            </button>
+            {item.datasetType && (
+              <span className="text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
+                {item.datasetType === "VIRTUAL" ? "view" : "table"}
+              </span>
+            )}
+          </div>
         )}
       </div>
       
-      {/* Children */}
-      {isExpanded && item.children && (
+      {/* Children for containers */}
+      {isExpanded && isContainer && item.children && (
         <div>
           {item.children.map((child) => (
             <CatalogTreeItem
@@ -198,6 +315,7 @@ function CatalogTreeItem({
               level={level + 1}
               onTableSelect={onTableSelect}
               onLoadChildren={onLoadChildren}
+              onLoadDatasetDetails={onLoadDatasetDetails}
             />
           ))}
           {item.children.length === 0 && !item.isLoading && (
@@ -208,6 +326,24 @@ function CatalogTreeItem({
               Empty
             </div>
           )}
+        </div>
+      )}
+      
+      {/* Columns for datasets */}
+      {isExpanded && isDataset && (
+        <div>
+          {item.fields && item.fields.length > 0 ? (
+            item.fields.map((field, idx) => (
+              <ColumnItem key={`${field.name}-${idx}`} field={field} level={level + 1} />
+            ))
+          ) : !item.isLoading && item.isLoaded ? (
+            <div 
+              className="text-xs text-muted-foreground py-1"
+              style={{ paddingLeft: `${(level + 1) * 12 + 24}px` }}
+            >
+              No columns found
+            </div>
+          ) : null}
         </div>
       )}
     </div>
@@ -327,6 +463,58 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
     }
   }, [credentials])
 
+  /**
+   * Load dataset details including columns/fields
+   * 
+   * Dremio API returns a 'fields' array for DATASET entities that contains
+   * column information including name and type details.
+   */
+  const loadDatasetDetails = useCallback(async (item: CatalogItem) => {
+    if (!credentials) return
+
+    // Update item to show loading
+    setCatalog(prev => updateItemInTree(prev, item.id, { isLoading: true }))
+
+    try {
+      const response = await fetch("/api/dremio/catalog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpoint: credentials.endpoint,
+          pat: credentials.pat,
+          id: item.id,
+          sslVerify: credentials.sslVerify
+        })
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to fetch dataset details")
+      }
+
+      // Extract fields from the dataset response
+      // Dremio returns fields as an array with name and type information
+      const fields: DatasetField[] = (data.fields || []).map((field: Record<string, unknown>) => ({
+        name: field.name as string,
+        type: field.type as DatasetField["type"]
+      }))
+
+      setCatalog(prev => updateItemInTree(prev, item.id, { 
+        fields, 
+        isLoaded: true, 
+        isLoading: false 
+      }))
+    } catch (err) {
+      console.error("Failed to load dataset details:", err)
+      setCatalog(prev => updateItemInTree(prev, item.id, { 
+        isLoading: false,
+        isLoaded: true,
+        fields: []
+      }))
+    }
+  }, [credentials])
+
   // Helper to update item in tree
   function updateItemInTree(
     items: CatalogItem[], 
@@ -422,6 +610,7 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
                 credentials={credentials}
                 onTableSelect={onTableSelect}
                 onLoadChildren={loadChildren}
+                onLoadDatasetDetails={loadDatasetDetails}
               />
             ))}
           </div>
