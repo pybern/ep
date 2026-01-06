@@ -9,6 +9,7 @@ import { OdbcTester } from "@/components/testers/odbc-tester"
 import { OpenAiTester } from "@/components/testers/openai-tester"
 import { TestHistory } from "@/components/test-history"
 import { CredentialSettings } from "@/components/credential-settings"
+import { OpenAICredentialSettings } from "@/components/openai-credential-settings"
 import { Shield, Zap, Globe, Database, Server, Sparkles, X, ChevronDown, ChevronUp, Settings } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { DremioCredentials } from "@/lib/credential-store"
@@ -299,8 +300,9 @@ export function FloatingWidget({ defaultOpen = false, onCredentialsChange, openS
 
               <div className="flex-1 overflow-y-auto scrollbar-subtle">
                 <div className="p-4">
-                  <TabsContent value="credentials" className="mt-0">
+                  <TabsContent value="credentials" className="mt-0 space-y-6">
                     <CredentialSettings onCredentialsChange={onCredentialsChange} />
+                    <OpenAICredentialSettings />
                   </TabsContent>
                   <TabsContent value="api" className="mt-0">
                     <ApiTester onResult={addResult} />

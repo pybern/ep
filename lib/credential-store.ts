@@ -7,8 +7,16 @@ export interface DremioCredentials {
   sslVerify?: boolean
 }
 
+export interface OpenAICredentials {
+  baseUrl: string
+  apiKey: string
+  model: string
+  sslVerify?: boolean
+}
+
 export interface StoredCredentials {
   dremio?: DremioCredentials
+  openai?: OpenAICredentials
   lastUpdated?: string
 }
 
@@ -68,5 +76,24 @@ export function getDremioCredentials(): DremioCredentials | null {
 export function clearDremioCredentials(): void {
   const stored = getStoredCredentials()
   delete stored.dremio
+  saveCredentials(stored)
+}
+
+export function saveOpenAICredentials(credentials: OpenAICredentials): void {
+  const stored = getStoredCredentials()
+  saveCredentials({
+    ...stored,
+    openai: credentials
+  })
+}
+
+export function getOpenAICredentials(): OpenAICredentials | null {
+  const stored = getStoredCredentials()
+  return stored.openai || null
+}
+
+export function clearOpenAICredentials(): void {
+  const stored = getStoredCredentials()
+  delete stored.openai
   saveCredentials(stored)
 }

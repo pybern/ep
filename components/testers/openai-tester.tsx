@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -8,7 +8,8 @@ import { Textarea } from "@/components/ui/textarea"
 import { ModeToggle, type RequestMode } from "@/components/ui/mode-toggle"
 import type { TestResult } from "@/components/connection-tester"
 import { ResultDisplay } from "@/components/result-display"
-import { Loader2, Play, Eye, EyeOff, Sparkles } from "lucide-react"
+import { Loader2, Play, Eye, EyeOff, Sparkles, Settings2 } from "lucide-react"
+import { getOpenAICredentials } from "@/lib/credential-store"
 
 type Props = {
   onResult: (result: Omit<TestResult, "id" | "timestamp">) => void
@@ -27,6 +28,19 @@ export function OpenAiTester({ onResult }: Props) {
   const [mode, setMode] = useState<RequestMode>("server")
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<Omit<TestResult, "id" | "timestamp"> | null>(null)
+  const [hasStoredCredentials, setHasStoredCredentials] = useState(false)
+
+  // Load stored credentials on mount
+  useEffect(() => {
+    const stored = getOpenAICredentials()
+    if (stored) {
+      setBaseUrl(stored.baseUrl)
+      setApiKey(stored.apiKey)
+      setModel(stored.model)
+      setSkipSslVerify(stored.sslVerify === false)
+      setHasStoredCredentials(true)
+    }
+  }, [])
 
   const validateInputs = (): { valid: boolean; message: string } => {
     if (!baseUrl.trim()) {
@@ -283,6 +297,12 @@ export function OpenAiTester({ onResult }: Props) {
       <div className="flex items-center gap-2 mb-2">
         <Sparkles className="h-4 w-4 text-purple-500" />
         <Label className="text-sm text-muted-foreground">OpenAI API Connection Test</Label>
+        {hasStoredCredentials && (
+          <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
+            <Settings2 className="h-3 w-3" />
+            Stored
+          </span>
+        )}
       </div>
       <p className="text-xs text-muted-foreground">
         Test connections to OpenAI-compatible APIs (OpenAI, Azure OpenAI, local LLMs, MaaS endpoints, etc.)
