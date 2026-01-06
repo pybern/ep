@@ -1,0 +1,21 @@
+# .github/workflows/sync-to-org.yml
+name: Sync to Organization Repo
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to Organization Repo
+        run: |
+          git remote add org https://x-access-token:${{ secrets.ORG_REPO_PAT }}@github.com/nggdim/ep.git
+          git push org main --force
