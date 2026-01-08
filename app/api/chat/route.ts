@@ -159,19 +159,34 @@ export async function POST(req: Request) {
     // Build the system prompt with data context
     const systemPrompt = buildSystemPrompt(dataContext as DataContext | undefined)
     
-    // Log context info for debugging
+    // Log context info for debugging - detailed logging to verify data transmission
     const tableCount = dataContext?.tables?.length || 0
     const containerCount = dataContext?.containers?.length || 0
     const totalColumns = (dataContext?.tables || []).reduce((sum: number, t: TableContext) => sum + t.columns.length, 0) +
       (dataContext?.containers || []).reduce((sum: number, c: ContainerContext) => 
         sum + (c.childDatasets || []).reduce((s: number, d: { columns: ColumnInfo[] }) => s + d.columns.length, 0), 0)
     
-    console.log(`[Chat API] Data context received: ${tableCount} tables, ${containerCount} containers, ${totalColumns} total columns`)
+    console.log(`[Chat API] ═══════════════════════════════════════════════════════`)
+    console.log(`[Chat API] 📥 Request received`)
+    console.log(`[Chat API] Data context summary: ${tableCount} tables, ${containerCount} containers, ${totalColumns} total columns`)
     
     if (tableCount > 0 || containerCount > 0) {
       console.log(`[Chat API] Tables: ${dataContext?.tables?.map((t: TableContext) => t.path).join(', ') || 'none'}`)
       console.log(`[Chat API] Containers: ${dataContext?.containers?.map((c: ContainerContext) => c.path).join(', ') || 'none'}`)
+      
+      // Log column details for verification
+      if (dataContext?.tables) {
+        for (const table of dataContext.tables) {
+          console.log(`[Chat API]   └─ ${table.path}: [${table.columns.map((c: ColumnInfo) => c.name).join(', ')}]`)
+        }
+      }
+    } else {
+      console.log(`[Chat API] ⚠ No data context provided - assistant will have limited schema knowledge`)
     }
+    
+    // Log system prompt size to verify schema was included
+    console.log(`[Chat API] System prompt size: ${systemPrompt.length} chars`)
+    console.log(`[Chat API] ═══════════════════════════════════════════════════════`)
     
     // Prepend system message
     const messagesWithSystem: ModelMessage[] = [

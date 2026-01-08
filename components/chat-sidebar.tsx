@@ -27,6 +27,11 @@ import {
   ChevronDown,
 } from "lucide-react"
 
+interface DataContext {
+  tables: { path: string; columns: { name: string; type: string }[] }[]
+  containers: { path: string; type: string; childDatasets: { path: string; columns: { name: string; type: string }[] }[] }[]
+}
+
 interface ChatSidebarProps {
   isOpen: boolean
   onToggle: () => void
@@ -49,6 +54,10 @@ export function ChatSidebar({
   const [contextExpanded, setContextExpanded] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  
+  // Refs to hold latest values - these are read at send-time to ensure freshness
+  const credentialsRef = useRef<OpenAICredentials | null>(null)
+  const dataContextRef = useRef<DataContext | undefined>(undefined)
 
   // Load credentials on mount and listen for changes
   useEffect(() => {
@@ -122,39 +131,64 @@ export function ChatSidebar({
     return { tables, containers }
   }, [selectedCatalogItems])
 
+  // Keep the ref in sync with the latest dataContext - this ensures send-time reads get fresh data
+  useEffect(() => {
+    dataContextRef.current = dataContext
+    console.log(`[ChatSidebar] 🔄 dataContextRef updated:`, {
+      hasContext: !!dataContext,
+      tables: dataContext?.tables?.length || 0,
+      containers: dataContext?.containers?.length || 0,
+    })
+  }, [dataContext])
+  
+  // Keep credentials ref in sync
+  useEffect(() => {
+    credentialsRef.current = credentials
+  }, [credentials])
+
   // Create a unique ID for the chat based on credentials
   const chatId = useMemo(() => {
     if (!credentials) return "chat-unconfigured"
     return `chat-${credentials.baseUrl}-${credentials.model}`
   }, [credentials])
 
-  // Create the transport with credentials and data context in the body
+  // Create the transport - uses a body FUNCTION that reads from ref at send-time
+  // This ensures the latest context is always included in requests
   const transport = useMemo(() => {
     if (!credentials) {
       console.log("[ChatSidebar] No credentials - transport not created")
       return undefined
     }
     
-    const bodyParams = {
-      baseUrl: credentials.baseUrl,
-      apiKey: credentials.apiKey,
-      model: credentials.model,
-      skipSslVerify: credentials.sslVerify === false,
-      dataContext,
-    }
-    
-    console.log(`[ChatSidebar] Creating transport with context:`, {
-      model: credentials.model,
-      hasDataContext: !!dataContext,
-      tablesCount: dataContext?.tables?.length || 0,
-      containersCount: dataContext?.containers?.length || 0,
-    })
+    console.log(`[ChatSidebar] Creating transport with dynamic body function`)
     
     return new TextStreamChatTransport({
       api: "/api/chat",
-      body: bodyParams,
+      // Body is a FUNCTION - it gets called at send-time, reading the latest values from refs
+      body: () => {
+        const currentContext = dataContextRef.current
+        const currentCreds = credentialsRef.current
+        
+        console.log(`[Transport body()] 📤 Evaluating body at send-time:`, {
+          hasCredentials: !!currentCreds,
+          hasDataContext: !!currentContext,
+          tablesCount: currentContext?.tables?.length || 0,
+          containersCount: currentContext?.containers?.length || 0,
+          totalColumns: (currentContext?.tables || []).reduce((sum, t) => sum + t.columns.length, 0) +
+            (currentContext?.containers || []).reduce((sum, c) => 
+              sum + c.childDatasets.reduce((s, d) => s + d.columns.length, 0), 0),
+        })
+        
+        return {
+          baseUrl: currentCreds?.baseUrl,
+          apiKey: currentCreds?.apiKey,
+          model: currentCreds?.model,
+          skipSslVerify: currentCreds?.sslVerify === false,
+          dataContext: currentContext,
+        }
+      },
     })
-  }, [credentials, dataContext])
+  }, [credentials]) // Only recreate when credentials change - body function reads refs at send-time
 
   const {
     messages,
@@ -195,11 +229,13 @@ export function ChatSidebar({
       return
     }
     
-    console.log(`[ChatSidebar] 📤 Sending message:`, {
+    // Log what will be sent - the transport will read from dataContextRef at send-time
+    const currentContext = dataContextRef.current
+    console.log(`[ChatSidebar] 📤 Triggering send:`, {
       messagePreview: input.trim().substring(0, 100) + (input.length > 100 ? '...' : ''),
-      dataContextIncluded: !!dataContext,
-      tablesInContext: dataContext?.tables?.length || 0,
-      containersInContext: dataContext?.containers?.length || 0,
+      dataContextInRef: !!currentContext,
+      tablesInRef: currentContext?.tables?.length || 0,
+      containersInRef: currentContext?.containers?.length || 0,
     })
     
     sendMessage({ text: input.trim() })
@@ -209,7 +245,7 @@ export function ChatSidebar({
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto"
     }
-  }, [input, credentials, isChatLoading, sendMessage, dataContext])
+  }, [input, credentials, isChatLoading, sendMessage])
 
   // Handle keyboard shortcuts
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
