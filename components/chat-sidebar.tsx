@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { getOpenAICredentials, OpenAICredentials, DremioCredentials } from "@/lib/credential-store"
-import { DataContextSelector, DataContext } from "@/components/data-context-selector"
+import { SelectedCatalogItem } from "@/components/dremio-catalog"
 import { cn } from "@/lib/utils"
 import {
   MessageSquare,
@@ -21,6 +21,10 @@ import {
   Sparkles,
   ChevronRight,
   RefreshCw,
+  Database,
+  Table2,
+  Folder,
+  ChevronDown,
 } from "lucide-react"
 
 interface ChatSidebarProps {
@@ -28,13 +32,21 @@ interface ChatSidebarProps {
   onToggle: () => void
   onOpenSettings?: () => void
   dremioCredentials?: DremioCredentials | null
+  /** Selected catalog items from the sidebar explorer */
+  selectedCatalogItems?: SelectedCatalogItem[]
 }
 
-export function ChatSidebar({ isOpen, onToggle, onOpenSettings, dremioCredentials }: ChatSidebarProps) {
+export function ChatSidebar({ 
+  isOpen, 
+  onToggle, 
+  onOpenSettings, 
+  dremioCredentials,
+  selectedCatalogItems = [],
+}: ChatSidebarProps) {
   const [credentials, setCredentials] = useState<OpenAICredentials | null>(null)
   const [isCredentialsLoading, setIsCredentialsLoading] = useState(true)
   const [input, setInput] = useState("")
-  const [dataContext, setDataContext] = useState<DataContext>({ tables: [] })
+  const [contextExpanded, setContextExpanded] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -69,8 +81,43 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings, dremioCredential
     }
   }, [])
 
+  // Build data context from selected catalog items
+  const dataContext = useMemo(() => {
+    if (selectedCatalogItems.length === 0) {
+      console.log("[ChatSidebar] No catalog items selected, dataContext is undefined")
+      return undefined
+    }
+
+    const tables: { path: string; columns: { name: string; type: string }[] }[] = []
+    const containers: { path: string; type: string; childDatasets: { path: string; columns: { name: string; type: string }[] }[] }[] = []
+
+    for (const item of selectedCatalogItems) {
+      if (item.type === "DATASET") {
+        tables.push({
+          path: item.path,
+          columns: item.columns.map(col => ({ name: col.name, type: col.type }))
+        })
+      } else if (item.type === "CONTAINER") {
+        containers.push({
+          path: item.path,
+          type: item.containerType || "CONTAINER",
+          childDatasets: (item.childDatasets || []).map(ds => ({
+            path: ds.path,
+            columns: ds.columns.map(col => ({ name: col.name, type: col.type }))
+          }))
+        })
+      }
+    }
+
+    const totalCols = tables.reduce((sum, t) => sum + t.columns.length, 0) +
+      containers.reduce((sum, c) => sum + c.childDatasets.reduce((s, d) => s + d.columns.length, 0), 0)
+    
+    console.log(`[ChatSidebar] Data context built: ${tables.length} tables, ${containers.length} containers, ${totalCols} total columns`)
+    
+    return { tables, containers }
+  }, [selectedCatalogItems])
+
   // Create a unique ID for the chat based on credentials
-  // Note: We don't include dataContext here as we want to preserve chat history when context changes
   const chatId = useMemo(() => {
     if (!credentials) return "chat-unconfigured"
     return `chat-${credentials.baseUrl}-${credentials.model}`
@@ -82,23 +129,12 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings, dremioCredential
       return undefined
     }
     
-    // Format the data context for the API
-    const schemaContext = dataContext.tables.length > 0 ? {
-      tables: dataContext.tables.map(table => ({
-        path: table.path,
-        columns: table.columns.map(col => ({
-          name: col.name,
-          type: col.type
-        }))
-      }))
-    } : undefined
-    
     const bodyParams = {
       baseUrl: credentials.baseUrl,
       apiKey: credentials.apiKey,
       model: credentials.model,
       skipSslVerify: credentials.sslVerify === false,
-      dataContext: schemaContext,
+      dataContext,
     }
     
     return new TextStreamChatTransport({
@@ -183,6 +219,18 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings, dremioCredential
     credentials.apiKey?.trim() !== "" &&
     credentials.model?.trim() !== ""
 
+  // Count total context items
+  const totalTables = selectedCatalogItems.filter(i => i.type === "DATASET").length
+  const totalContainers = selectedCatalogItems.filter(i => i.type === "CONTAINER").length
+  const totalColumns = selectedCatalogItems.reduce((sum, item) => {
+    if (item.type === "DATASET") {
+      return sum + item.columns.length
+    } else if (item.childDatasets) {
+      return sum + item.childDatasets.reduce((s, ds) => s + ds.columns.length, 0)
+    }
+    return sum
+  }, 0)
+
   if (!isOpen) {
     return (
       <button
@@ -218,7 +266,7 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings, dremioCredential
         
         <div className="flex items-center gap-2 flex-1 min-w-0">
           <Sparkles className="h-4 w-4 text-primary shrink-0" />
-          <span className="text-sm font-medium truncate">AI Assistant</span>
+          <span className="text-sm font-medium truncate">SQL Assistant</span>
         </div>
 
         {messages.length > 0 && (
@@ -241,15 +289,120 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings, dremioCredential
         )}
       </div>
 
-      {/* Data Context Selector - Always visible when Dremio is configured */}
+      {/* Context Summary Panel */}
       {dremioCredentials && (
         <div className="border-b border-border/50 shrink-0">
-          <DataContextSelector
-            credentials={dremioCredentials}
-            context={dataContext}
-            onContextChange={setDataContext}
-            onOpenSettings={onOpenSettings}
-          />
+          <button
+            className="flex items-center gap-2 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left"
+            onClick={() => setContextExpanded(!contextExpanded)}
+          >
+            <span className="shrink-0 w-4 h-4 flex items-center justify-center">
+              {contextExpanded ? (
+                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+              )}
+            </span>
+            <Database className="h-3.5 w-3.5 text-primary" />
+            <div className="flex-1 min-w-0">
+              <span className="text-xs font-medium">Data Context</span>
+            </div>
+            {selectedCatalogItems.length > 0 ? (
+              <span className="text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-full">
+                {selectedCatalogItems.length} item{selectedCatalogItems.length !== 1 ? 's' : ''}
+              </span>
+            ) : (
+              <span className="text-[9px] text-muted-foreground/70">
+                (select in sidebar)
+              </span>
+            )}
+          </button>
+
+          {contextExpanded && (
+            <div className="px-3 pb-2 space-y-2">
+              {selectedCatalogItems.length === 0 ? (
+                <div className="bg-accent/20 rounded-md p-2">
+                  <p className="text-[10px] text-muted-foreground mb-1">
+                    No data context selected
+                  </p>
+                  <p className="text-[9px] text-muted-foreground/70">
+                    Use the checkboxes in the sidebar catalog to select tables or folders. 
+                    Their schema information will be shared with the AI assistant.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {/* Summary stats */}
+                  <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+                    {totalTables > 0 && (
+                      <span className="flex items-center gap-1">
+                        <Table2 className="h-3 w-3" />
+                        {totalTables} table{totalTables !== 1 ? 's' : ''}
+                      </span>
+                    )}
+                    {totalContainers > 0 && (
+                      <span className="flex items-center gap-1">
+                        <Folder className="h-3 w-3" />
+                        {totalContainers} folder{totalContainers !== 1 ? 's' : ''}
+                      </span>
+                    )}
+                    {totalColumns > 0 && (
+                      <span>{totalColumns} columns</span>
+                    )}
+                  </div>
+
+                  {/* Selected items list */}
+                  <div className="space-y-1">
+                    {selectedCatalogItems.map(item => (
+                      <div 
+                        key={item.id} 
+                        className="flex items-start gap-1.5 bg-background/50 rounded p-1.5"
+                      >
+                        {item.type === "DATASET" ? (
+                          <Table2 className="h-3 w-3 text-primary mt-0.5 shrink-0" />
+                        ) : (
+                          <Folder className="h-3 w-3 text-amber-400 mt-0.5 shrink-0" />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[10px] font-medium truncate" title={item.path}>
+                            {item.path.split(".").pop()}
+                          </div>
+                          {item.type === "DATASET" ? (
+                            item.columnsLoading ? (
+                              <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
+                                <Loader2 className="h-2 w-2 animate-spin" />
+                                Loading...
+                              </div>
+                            ) : (
+                              <div className="text-[9px] text-muted-foreground">
+                                {item.columns.length} columns
+                              </div>
+                            )
+                          ) : (
+                            item.childDatasetsLoading ? (
+                              <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
+                                <Loader2 className="h-2 w-2 animate-spin" />
+                                Loading datasets...
+                              </div>
+                            ) : (
+                              <div className="text-[9px] text-muted-foreground">
+                                {item.childDatasets?.length || 0} datasets
+                              </div>
+                            )
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Help text */}
+                  <p className="text-[9px] text-muted-foreground/70">
+                    Schema info is shared with the AI for accurate SQL generation.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -287,9 +440,24 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings, dremioCredential
                   <div className="p-3 rounded-full bg-accent/50 inline-block mb-3">
                     <MessageSquare className="h-5 w-5 text-muted-foreground" />
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    Start a conversation with the AI assistant
+                  <p className="text-sm font-medium mb-2">SQL Assistant Ready</p>
+                  <p className="text-xs text-muted-foreground mb-3">
+                    I can help you explore your data and write SQL queries.
                   </p>
+                  <div className="text-left bg-accent/30 rounded-lg p-3 text-[11px] text-muted-foreground space-y-1.5">
+                    <p className="font-medium text-foreground/80">I can help you:</p>
+                    <ul className="space-y-1 pl-3">
+                      <li>• Describe available tables and columns</li>
+                      <li>• Write SELECT, JOIN, and aggregate queries</li>
+                      <li>• Explain query logic and suggest optimizations</li>
+                      <li>• Build complex CTEs and window functions</li>
+                    </ul>
+                    {selectedCatalogItems.length > 0 && (
+                      <p className="pt-2 text-primary/80 font-medium">
+                        ✓ {selectedCatalogItems.length} item{selectedCatalogItems.length !== 1 ? 's' : ''} selected for context
+                      </p>
+                    )}
+                  </div>
                 </div>
               ) : (
                 messages.map((message) => (
@@ -371,13 +539,24 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings, dremioCredential
 
           {/* Input Area */}
           <div className="border-t border-border/50 p-3 shrink-0">
+            {/* Context indicator */}
+            {selectedCatalogItems.length > 0 && (
+              <div className="flex items-center gap-1.5 mb-2 px-1">
+                <Database className="h-3 w-3 text-primary" />
+                <span className="text-[10px] text-primary">
+                  {totalTables + totalContainers} item{totalTables + totalContainers !== 1 ? 's' : ''} • {totalColumns} columns in context
+                </span>
+              </div>
+            )}
             <div className="flex gap-2">
               <Textarea
                 ref={textareaRef}
                 value={input}
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
-                placeholder="Type a message..."
+                placeholder={selectedCatalogItems.length > 0 
+                  ? "Ask about your selected tables..." 
+                  : "Ask about your data..."}
                 className="min-h-[40px] max-h-[200px] resize-none text-sm"
                 disabled={isChatLoading}
               />
@@ -400,7 +579,9 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings, dremioCredential
                     disabled={!input.trim()}
                     onClick={handleSend}
                     className="h-10 w-10 shrink-0"
-                    title="Send message"
+                    title={selectedCatalogItems.length > 0 
+                      ? `Send with ${selectedCatalogItems.length} item(s) context` 
+                      : "Send message"}
                   >
                     <Send className="h-4 w-4" />
                   </Button>

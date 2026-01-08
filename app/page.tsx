@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 import { FloatingWidget } from "@/components/floating-widget"
 import { SqlEditor } from "@/components/sql-editor"
-import { DremioCatalog } from "@/components/dremio-catalog"
+import { DremioCatalog, SelectedCatalogItem } from "@/components/dremio-catalog"
 import { ChatSidebar } from "@/components/chat-sidebar"
 import { DremioCredentials, getDremioCredentials } from "@/lib/credential-store"
 import { Database, PanelLeftClose, PanelLeft, MessageSquare } from "lucide-react"
@@ -16,6 +16,7 @@ export default function Page() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [chatSidebarOpen, setChatSidebarOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  const [selectedCatalogItems, setSelectedCatalogItems] = useState<SelectedCatalogItem[]>([])
   const openSettingsRef = useRef<(() => void) | null>(null)
 
   // Load credentials on mount
@@ -45,6 +46,10 @@ export default function Page() {
     }
   }, [])
 
+  const handleSelectionChange = useCallback((items: SelectedCatalogItem[]) => {
+    setSelectedCatalogItems(items)
+  }, [])
+
   if (isLoading) {
     return (
       <main className="fixed inset-0 bg-background flex items-center justify-center">
@@ -67,6 +72,9 @@ export default function Page() {
             credentials={credentials} 
             onTableSelect={handleTableSelect}
             onOpenSettings={handleOpenSettings}
+            selectionEnabled={true}
+            selectedItems={selectedCatalogItems}
+            onSelectionChange={handleSelectionChange}
           />
         )}
       </div>
@@ -143,6 +151,7 @@ export default function Page() {
         onToggle={handleToggleChatSidebar}
         onOpenSettings={handleOpenSettings}
         dremioCredentials={credentials}
+        selectedCatalogItems={selectedCatalogItems}
       />
 
       {/* Floating Widget */}

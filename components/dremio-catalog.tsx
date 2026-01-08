@@ -20,7 +20,7 @@
  * @see https://docs.dremio.com/current/reference/api/catalog/
  */
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { 
   ChevronRight, 
@@ -40,7 +40,9 @@ import {
   Calendar,
   ToggleLeft,
   Binary,
-  List
+  List,
+  Check,
+  X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { DremioCredentials } from "@/lib/credential-store"
@@ -49,6 +51,45 @@ interface DremioCatalogProps {
   credentials: DremioCredentials | null
   onTableSelect?: (tablePath: string) => void
   onOpenSettings?: () => void
+  /** Enable selection mode with checkboxes */
+  selectionEnabled?: boolean
+  /** Current selection state */
+  selectedItems?: SelectedCatalogItem[]
+  /** Callback when selection changes */
+  onSelectionChange?: (items: SelectedCatalogItem[]) => void
+}
+
+/**
+ * Represents a selected catalog item with its metadata and columns
+ */
+export interface SelectedCatalogItem {
+  /** Unique ID of the catalog item */
+  id: string
+  /** Full path to the item */
+  path: string
+  /** Type of the item */
+  type: "CONTAINER" | "DATASET"
+  /** Sub-type for containers */
+  containerType?: "SPACE" | "SOURCE" | "FOLDER" | "HOME"
+  /** Sub-type for datasets */
+  datasetType?: "VIRTUAL" | "PROMOTED" | "PHYSICAL_DATASET_HOME_FILE" | "PHYSICAL_DATASET_HOME_FOLDER" | "PHYSICAL_DATASET_SOURCE_FILE" | "PHYSICAL_DATASET_SOURCE_FOLDER" | "PHYSICAL_DATASET"
+  /** Columns (for datasets) */
+  columns: SelectedColumn[]
+  /** Whether columns have been loaded */
+  columnsLoaded: boolean
+  /** Whether columns are currently loading */
+  columnsLoading?: boolean
+  /** Child datasets (for containers, loaded lazily) */
+  childDatasets?: { path: string; columns: SelectedColumn[] }[]
+  /** Whether child datasets have been loaded */
+  childDatasetsLoaded?: boolean
+  /** Whether child datasets are currently loading */
+  childDatasetsLoading?: boolean
+}
+
+export interface SelectedColumn {
+  name: string
+  type: string
 }
 
 /**
@@ -202,7 +243,10 @@ function CatalogTreeItem({
   level = 0,
   onTableSelect,
   onLoadChildren,
-  onLoadDatasetDetails
+  onLoadDatasetDetails,
+  selectionEnabled,
+  selectedItemsMap,
+  onToggleSelection,
 }: { 
   item: CatalogItem
   credentials: DremioCredentials
@@ -210,12 +254,17 @@ function CatalogTreeItem({
   onTableSelect?: (tablePath: string) => void
   onLoadChildren: (item: CatalogItem) => Promise<void>
   onLoadDatasetDetails: (item: CatalogItem) => Promise<void>
+  selectionEnabled?: boolean
+  selectedItemsMap?: Map<string, SelectedCatalogItem>
+  onToggleSelection?: (item: CatalogItem) => void
 }) {
   const [isExpanded, setIsExpanded] = useState(false)
   const isContainer = item.type === "CONTAINER"
   const isDataset = item.type === "DATASET"
   // All containers can expand, and datasets can expand to show columns
   const canExpand = isContainer || isDataset
+  const itemPath = item.path.join(".")
+  const isSelected = selectedItemsMap?.has(itemPath) ?? false
   
   const handleToggle = async () => {
     if (!canExpand) return
@@ -247,18 +296,47 @@ function CatalogTreeItem({
     }
   }
 
+  const handleSelectionClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (selectionEnabled && onToggleSelection) {
+      onToggleSelection(item)
+    }
+  }
+
+  // Determine if this item can be selected (containers and datasets)
+  const canSelect = selectionEnabled && (isContainer || isDataset)
+
   return (
     <div>
       <div
         className={cn(
           "flex items-center gap-1 py-1 px-2 rounded cursor-pointer",
           "hover:bg-accent/50 transition-colors",
-          "group"
+          "group",
+          isSelected && "bg-primary/10"
         )}
         style={{ paddingLeft: `${level * 12 + 8}px` }}
         onClick={handleToggle}
         onDoubleClick={handleDoubleClick}
       >
+        {/* Selection checkbox (when selection mode is enabled) */}
+        {selectionEnabled && canSelect && (
+          <button
+            className="shrink-0 w-4 h-4 flex items-center justify-center mr-0.5"
+            onClick={handleSelectionClick}
+            title={isSelected ? "Remove from context" : "Add to context"}
+          >
+            <span className={cn(
+              "w-3.5 h-3.5 rounded border flex items-center justify-center transition-colors",
+              isSelected 
+                ? "bg-primary border-primary" 
+                : "border-border hover:border-primary/50"
+            )}>
+              {isSelected && <Check className="h-2.5 w-2.5 text-primary-foreground" />}
+            </span>
+          </button>
+        )}
+
         {/* Expand/collapse icon */}
         {canExpand ? (
           <span className="shrink-0 w-4 h-4 flex items-center justify-center">
@@ -280,7 +358,8 @@ function CatalogTreeItem({
         {/* Name */}
         <span className={cn(
           "text-sm truncate",
-          isDataset ? "text-foreground" : "text-foreground/80"
+          isDataset ? "text-foreground" : "text-foreground/80",
+          isSelected && "font-medium"
         )}>
           {item.path[item.path.length - 1]}
         </span>
@@ -302,6 +381,15 @@ function CatalogTreeItem({
             )}
           </div>
         )}
+
+        {/* Container type badge */}
+        {isContainer && selectionEnabled && (
+          <div className="ml-auto flex items-center gap-1">
+            <span className="text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
+              {item.containerType?.toLowerCase() || "container"}
+            </span>
+          </div>
+        )}
       </div>
       
       {/* Children for containers */}
@@ -316,6 +404,9 @@ function CatalogTreeItem({
               onTableSelect={onTableSelect}
               onLoadChildren={onLoadChildren}
               onLoadDatasetDetails={onLoadDatasetDetails}
+              selectionEnabled={selectionEnabled}
+              selectedItemsMap={selectedItemsMap}
+              onToggleSelection={onToggleSelection}
             />
           ))}
           {item.children.length === 0 && !item.isLoading && (
@@ -350,10 +441,24 @@ function CatalogTreeItem({
   )
 }
 
-export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: DremioCatalogProps) {
+export function DremioCatalog({ 
+  credentials, 
+  onTableSelect, 
+  onOpenSettings,
+  selectionEnabled = false,
+  selectedItems = [],
+  onSelectionChange,
+}: DremioCatalogProps) {
   const [catalog, setCatalog] = useState<CatalogItem[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Create a map of selected items for quick lookup
+  const selectedItemsMap = useMemo(() => {
+    const map = new Map<string, SelectedCatalogItem>()
+    selectedItems.forEach(item => map.set(item.path, item))
+    return map
+  }, [selectedItems])
 
   const fetchCatalog = useCallback(async () => {
     if (!credentials) return
@@ -401,12 +506,6 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
 
   /**
    * Load children of a catalog container by fetching via the item's ID
-   * 
-   * According to Dremio 26.x API Reference:
-   * - GET /api/v3/catalog/{id} returns a catalog entity and its children
-   * - Children are included in the response for CONTAINER types (SPACE, SOURCE, FOLDER, HOME)
-   * - Using ID is the preferred method for navigating the folder tree as it's more reliable
-   *   than path-based lookups and handles special characters in names correctly
    */
   const loadChildren = useCallback(async (item: CatalogItem) => {
     if (!credentials) return
@@ -415,15 +514,13 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
     setCatalog(prev => updateItemInTree(prev, item.id, { isLoading: true }))
 
     try {
-      // Use the item's ID to fetch the catalog entity and its children
-      // Dremio 26.x API: GET /api/v3/catalog/{id}
       const response = await fetch("/api/dremio/catalog", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           endpoint: credentials.endpoint,
           pat: credentials.pat,
-          id: item.id, // Use ID-based lookup for reliable child fetching
+          id: item.id,
           sslVerify: credentials.sslVerify
         })
       })
@@ -434,8 +531,6 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
         throw new Error(data.error || "Failed to fetch children")
       }
 
-      // Transform children from the catalog entity response
-      // The children array contains references to child entities
       const children: CatalogItem[] = (data.children || []).map((child: Record<string, unknown>) => ({
         id: child.id as string,
         path: child.path as string[],
@@ -465,9 +560,6 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
 
   /**
    * Load dataset details including columns/fields
-   * 
-   * Dremio API returns a 'fields' array for DATASET entities that contains
-   * column information including name and type details.
    */
   const loadDatasetDetails = useCallback(async (item: CatalogItem) => {
     if (!credentials) return
@@ -493,8 +585,6 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
         throw new Error(data.error || "Failed to fetch dataset details")
       }
 
-      // Extract fields from the dataset response
-      // Dremio returns fields as an array with name and type information
       const fields: DatasetField[] = (data.fields || []).map((field: Record<string, unknown>) => ({
         name: field.name as string,
         type: field.type as DatasetField["type"]
@@ -514,6 +604,191 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
       }))
     }
   }, [credentials])
+
+  /**
+   * Handle toggling selection of a catalog item
+   */
+  const handleToggleSelection = useCallback(async (item: CatalogItem) => {
+    if (!onSelectionChange || !credentials) return
+
+    const itemPath = item.path.join(".")
+    const isCurrentlySelected = selectedItemsMap.has(itemPath)
+
+    if (isCurrentlySelected) {
+      // Remove from selection
+      const newItems = selectedItems.filter(i => i.path !== itemPath)
+      onSelectionChange(newItems)
+    } else {
+      // Add to selection
+      const isDataset = item.type === "DATASET"
+      const isContainer = item.type === "CONTAINER"
+
+      const newItem: SelectedCatalogItem = {
+        id: item.id,
+        path: itemPath,
+        type: isDataset ? "DATASET" : "CONTAINER",
+        containerType: item.containerType,
+        datasetType: item.datasetType,
+        columns: [],
+        columnsLoaded: false,
+        columnsLoading: isDataset,
+        childDatasets: [],
+        childDatasetsLoaded: false,
+        childDatasetsLoading: isContainer,
+      }
+
+      // Add to selection immediately
+      const newItems = [...selectedItems, newItem]
+      onSelectionChange(newItems)
+
+      // If it's a dataset, load its columns
+      if (isDataset) {
+        try {
+          const response = await fetch("/api/dremio/catalog", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              endpoint: credentials.endpoint,
+              pat: credentials.pat,
+              id: item.id,
+              sslVerify: credentials.sslVerify
+            })
+          })
+
+          const data = await response.json()
+
+          if (response.ok && data.fields) {
+            const columns: SelectedColumn[] = data.fields.map((field: { name: string; type: { name: string; precision?: number; scale?: number } }) => ({
+              name: field.name,
+              type: formatColumnType(field.type)
+            }))
+
+            // Update the selection with loaded columns
+            const updatedItems = newItems.map(i => 
+              i.path === itemPath 
+                ? { ...i, columns, columnsLoaded: true, columnsLoading: false }
+                : i
+            )
+            onSelectionChange(updatedItems)
+          } else {
+            // Mark as loaded even if no columns found
+            const updatedItems = newItems.map(i => 
+              i.path === itemPath 
+                ? { ...i, columnsLoaded: true, columnsLoading: false }
+                : i
+            )
+            onSelectionChange(updatedItems)
+          }
+        } catch (err) {
+          console.error("Failed to load columns for selection:", err)
+          const updatedItems = newItems.map(i => 
+            i.path === itemPath 
+              ? { ...i, columnsLoaded: true, columnsLoading: false }
+              : i
+          )
+          onSelectionChange(updatedItems)
+        }
+      }
+
+      // If it's a container, load its child datasets recursively
+      if (isContainer) {
+        await loadContainerDatasets(item, newItems, onSelectionChange, credentials)
+      }
+    }
+  }, [credentials, selectedItems, selectedItemsMap, onSelectionChange])
+
+  // Helper to recursively load all datasets within a container
+  async function loadContainerDatasets(
+    container: CatalogItem,
+    currentItems: SelectedCatalogItem[],
+    onSelectionChange: (items: SelectedCatalogItem[]) => void,
+    credentials: DremioCredentials
+  ) {
+    try {
+      const response = await fetch("/api/dremio/catalog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpoint: credentials.endpoint,
+          pat: credentials.pat,
+          id: container.id,
+          sslVerify: credentials.sslVerify
+        })
+      })
+
+      const data = await response.json()
+      const containerPath = container.path.join(".")
+
+      if (response.ok && data.children) {
+        const childDatasets: { path: string; columns: SelectedColumn[] }[] = []
+        
+        // Process children
+        for (const child of data.children) {
+          if (child.type === "DATASET") {
+            // Fetch columns for this dataset
+            try {
+              const childResponse = await fetch("/api/dremio/catalog", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  endpoint: credentials.endpoint,
+                  pat: credentials.pat,
+                  id: child.id,
+                  sslVerify: credentials.sslVerify
+                })
+              })
+
+              const childData = await childResponse.json()
+              const columns: SelectedColumn[] = (childData.fields || []).map((field: { name: string; type: { name: string; precision?: number; scale?: number } }) => ({
+                name: field.name,
+                type: formatColumnType(field.type)
+              }))
+
+              childDatasets.push({
+                path: (child.path as string[]).join("."),
+                columns
+              })
+            } catch {
+              childDatasets.push({
+                path: (child.path as string[]).join("."),
+                columns: []
+              })
+            }
+          }
+        }
+
+        // Update the container with its child datasets
+        const updatedItems = currentItems.map(i => 
+          i.path === containerPath 
+            ? { 
+                ...i, 
+                childDatasets, 
+                childDatasetsLoaded: true, 
+                childDatasetsLoading: false 
+              }
+            : i
+        )
+        onSelectionChange(updatedItems)
+      } else {
+        // Mark as loaded even if no children found
+        const updatedItems = currentItems.map(i => 
+          i.path === containerPath 
+            ? { ...i, childDatasetsLoaded: true, childDatasetsLoading: false }
+            : i
+        )
+        onSelectionChange(updatedItems)
+      }
+    } catch (err) {
+      console.error("Failed to load container datasets:", err)
+      const containerPath = container.path.join(".")
+      const updatedItems = currentItems.map(i => 
+        i.path === containerPath 
+          ? { ...i, childDatasetsLoaded: true, childDatasetsLoading: false }
+          : i
+      )
+      onSelectionChange(updatedItems)
+    }
+  }
 
   // Helper to update item in tree
   function updateItemInTree(
@@ -537,6 +812,16 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
       fetchCatalog()
     }
   }, [credentials, fetchCatalog])
+
+  // Count total selected items
+  const selectedCount = selectedItems.length
+
+  // Handle clearing all selections
+  const handleClearSelection = useCallback(() => {
+    if (onSelectionChange) {
+      onSelectionChange([])
+    }
+  }, [onSelectionChange])
 
   if (!credentials) {
     return (
@@ -570,17 +855,45 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
         <div className="flex items-center gap-2 text-sm font-medium">
           <Database className="h-4 w-4 text-primary" />
           <span>Catalog</span>
+          {selectionEnabled && selectedCount > 0 && (
+            <span className="text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-full">
+              {selectedCount} selected
+            </span>
+          )}
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6"
-          onClick={fetchCatalog}
-          disabled={isLoading}
-        >
-          <RefreshCw className={cn("h-3.5 w-3.5", isLoading && "animate-spin")} />
-        </Button>
+        <div className="flex items-center gap-1">
+          {selectionEnabled && selectedCount > 0 && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 text-muted-foreground hover:text-destructive"
+              onClick={handleClearSelection}
+              title="Clear selection"
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            onClick={fetchCatalog}
+            disabled={isLoading}
+            title="Refresh catalog"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", isLoading && "animate-spin")} />
+          </Button>
+        </div>
       </div>
+
+      {/* Selection mode indicator */}
+      {selectionEnabled && (
+        <div className="px-3 py-1.5 bg-blue-500/10 border-b border-blue-500/20">
+          <p className="text-[10px] text-blue-600 dark:text-blue-400">
+            Click checkboxes to add tables or folders to AI context
+          </p>
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 overflow-auto scrollbar-subtle">
@@ -611,6 +924,9 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
                 onTableSelect={onTableSelect}
                 onLoadChildren={loadChildren}
                 onLoadDatasetDetails={loadDatasetDetails}
+                selectionEnabled={selectionEnabled}
+                selectedItemsMap={selectedItemsMap}
+                onToggleSelection={handleToggleSelection}
               />
             ))}
           </div>
@@ -620,7 +936,9 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
       {/* Footer hint */}
       <div className="px-3 py-2 border-t border-border/50 shrink-0">
         <p className="text-[10px] text-muted-foreground">
-          Click a table to insert into query
+          {selectionEnabled 
+            ? "Select items to include in AI context" 
+            : "Click a table to insert into query"}
         </p>
       </div>
     </div>

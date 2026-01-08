@@ -12,27 +12,42 @@ const insecureAgent = new Agent({
   },
 })
 
+interface ColumnInfo {
+  name: string
+  type: string
+}
+
 interface TableContext {
   path: string
-  columns: { name: string; type: string }[]
+  columns: ColumnInfo[]
+}
+
+interface ContainerContext {
+  path: string
+  type: string
+  childDatasets: {
+    path: string
+    columns: ColumnInfo[]
+  }[]
 }
 
 interface DataContext {
-  tables: TableContext[]
+  tables?: TableContext[]
+  containers?: ContainerContext[]
 }
 
 /**
- * Build a system prompt for the SQL assistant with schema context
+ * Build a comprehensive system prompt for the SQL assistant with schema context
  */
 function buildSystemPrompt(dataContext?: DataContext): string {
-  const basePrompt = `You are an expert SQL assistant specialized in helping users discover data and build queries. You have deep knowledge of SQL syntax, query optimization, and data analysis best practices.
+  const basePrompt = `You are an expert SQL assistant specialized in helping users discover data and build queries for Dremio. You have deep knowledge of SQL syntax, query optimization, and data analysis best practices.
 
-Your capabilities include:
-- Writing efficient SQL queries (SELECT, JOIN, GROUP BY, window functions, CTEs, etc.)
-- Explaining query logic and suggesting optimizations
-- Helping users understand their data schema and relationships
-- Suggesting analytical approaches and data exploration strategies
-- Debugging SQL errors and providing fixes
+Your primary capabilities:
+1. **Data Discovery**: Describe available tables, columns, and their data types to help users understand their data
+2. **Query Building**: Write efficient SQL queries including SELECT, JOIN, GROUP BY, window functions, CTEs, subqueries, and more
+3. **Query Optimization**: Suggest performance improvements and best practices
+4. **Data Analysis**: Help users formulate analytical approaches and data exploration strategies
+5. **Debugging**: Identify and fix SQL errors
 
 Guidelines:
 - Always use proper SQL formatting with clear indentation
@@ -40,37 +55,81 @@ Guidelines:
 - Use meaningful aliases for tables and columns
 - Add comments for complex query logic when helpful
 - Consider performance implications and suggest optimizations when relevant
-- When referencing tables, use the full qualified path (e.g., source.schema.table)`
+- When referencing tables, use the full qualified path (e.g., source.schema.table)
+- Be proactive in describing available data when the user asks about what data is available`
 
-  if (!dataContext || dataContext.tables.length === 0) {
+  if (!dataContext || (!dataContext.tables?.length && !dataContext.containers?.length)) {
     return basePrompt + `
 
-Note: No specific data context has been provided. Ask the user about their data schema if you need more information to help them.`
+Note: No specific data context has been provided. The user has not selected any tables or folders in the sidebar. You can:
+- Ask the user to select tables/folders in the sidebar to get schema information
+- Ask the user to describe their data schema manually
+- Provide general SQL guidance without specific table references`
   }
 
-  // Build schema context from selected tables
+  // Build schema context from selected items
   let schemaContext = `
 
 ## Available Data Schema
 
-The user has selected the following tables for context:
+The user has selected the following items for context. Use this information to write accurate queries and help them understand their data.
 
 `
 
-  for (const table of dataContext.tables) {
-    schemaContext += `### Table: \`${table.path}\`\n`
-    if (table.columns.length > 0) {
-      schemaContext += `| Column | Type |\n|--------|------|\n`
-      for (const col of table.columns) {
-        schemaContext += `| ${col.name} | ${col.type} |\n`
+  // Add directly selected tables
+  if (dataContext.tables && dataContext.tables.length > 0) {
+    schemaContext += `### Selected Tables\n\n`
+    
+    for (const table of dataContext.tables) {
+      schemaContext += `#### \`${table.path}\`\n`
+      if (table.columns.length > 0) {
+        schemaContext += `| Column | Type |\n|--------|------|\n`
+        for (const col of table.columns) {
+          schemaContext += `| ${col.name} | ${col.type} |\n`
+        }
+      } else {
+        schemaContext += `(Column information not available)\n`
       }
-    } else {
-      schemaContext += `(Column information not available)\n`
+      schemaContext += `\n`
     }
-    schemaContext += `\n`
   }
 
-  schemaContext += `Use this schema information to help the user write accurate queries and explore their data. Reference these exact table and column names when generating SQL.`
+  // Add container contexts with their child datasets
+  if (dataContext.containers && dataContext.containers.length > 0) {
+    schemaContext += `### Selected Folders/Sources\n\n`
+    
+    for (const container of dataContext.containers) {
+      schemaContext += `#### ${container.type}: \`${container.path}\`\n\n`
+      
+      if (container.childDatasets && container.childDatasets.length > 0) {
+        schemaContext += `Contains ${container.childDatasets.length} dataset(s):\n\n`
+        
+        for (const dataset of container.childDatasets) {
+          schemaContext += `##### \`${dataset.path}\`\n`
+          if (dataset.columns.length > 0) {
+            schemaContext += `| Column | Type |\n|--------|------|\n`
+            for (const col of dataset.columns) {
+              schemaContext += `| ${col.name} | ${col.type} |\n`
+            }
+          } else {
+            schemaContext += `(Column information not available)\n`
+          }
+          schemaContext += `\n`
+        }
+      } else {
+        schemaContext += `(No datasets found or loading...)\n\n`
+      }
+    }
+  }
+
+  // Add helpful guidance
+  schemaContext += `---
+
+**Usage Notes:**
+- Reference these exact table and column names when generating SQL
+- You can suggest JOINs between tables based on column names that appear related
+- When asked "what data do I have?" or similar, list and describe the available tables and columns
+- If the user asks about columns or tables not in this context, let them know they may need to select additional items in the sidebar`
 
   return basePrompt + schemaContext
 }
@@ -99,6 +158,20 @@ export async function POST(req: Request) {
     
     // Build the system prompt with data context
     const systemPrompt = buildSystemPrompt(dataContext as DataContext | undefined)
+    
+    // Log context info for debugging
+    const tableCount = dataContext?.tables?.length || 0
+    const containerCount = dataContext?.containers?.length || 0
+    const totalColumns = (dataContext?.tables || []).reduce((sum: number, t: TableContext) => sum + t.columns.length, 0) +
+      (dataContext?.containers || []).reduce((sum: number, c: ContainerContext) => 
+        sum + (c.childDatasets || []).reduce((s: number, d: { columns: ColumnInfo[] }) => s + d.columns.length, 0), 0)
+    
+    console.log(`[Chat API] Data context received: ${tableCount} tables, ${containerCount} containers, ${totalColumns} total columns`)
+    
+    if (tableCount > 0 || containerCount > 0) {
+      console.log(`[Chat API] Tables: ${dataContext?.tables?.map((t: TableContext) => t.path).join(', ') || 'none'}`)
+      console.log(`[Chat API] Containers: ${dataContext?.containers?.map((c: ContainerContext) => c.path).join(', ') || 'none'}`)
+    }
     
     // Prepend system message
     const messagesWithSystem: ModelMessage[] = [
