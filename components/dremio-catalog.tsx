@@ -45,10 +45,22 @@ import {
 import { cn } from "@/lib/utils"
 import { DremioCredentials } from "@/lib/credential-store"
 
+/**
+ * Represents a selected catalog item with its metadata for context
+ */
+export interface SelectedCatalogItem {
+  id: string
+  path: string[]
+  type: "table" | "view" | "folder" | "source"
+  fields?: Array<{ name: string; type: string }>
+}
+
 interface DremioCatalogProps {
   credentials: DremioCredentials | null
   onTableSelect?: (tablePath: string) => void
   onOpenSettings?: () => void
+  selectedItems?: SelectedCatalogItem[]
+  onSelectionChange?: (items: SelectedCatalogItem[]) => void
 }
 
 /**
@@ -202,7 +214,10 @@ function CatalogTreeItem({
   level = 0,
   onTableSelect,
   onLoadChildren,
-  onLoadDatasetDetails
+  onLoadDatasetDetails,
+  isSelected,
+  onToggleSelection,
+  selectedIds
 }: { 
   item: CatalogItem
   credentials: DremioCredentials
@@ -210,6 +225,9 @@ function CatalogTreeItem({
   onTableSelect?: (tablePath: string) => void
   onLoadChildren: (item: CatalogItem) => Promise<void>
   onLoadDatasetDetails: (item: CatalogItem) => Promise<void>
+  isSelected: boolean
+  onToggleSelection: (item: CatalogItem, selected: boolean) => void
+  selectedIds: Set<string>
 }) {
   const [isExpanded, setIsExpanded] = useState(false)
   const isContainer = item.type === "CONTAINER"
@@ -247,18 +265,42 @@ function CatalogTreeItem({
     }
   }
 
+  const handleCheckboxChange = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    onToggleSelection(item, !isSelected)
+  }
+
   return (
     <div>
       <div
         className={cn(
           "flex items-center gap-1 py-1 px-2 rounded cursor-pointer",
           "hover:bg-accent/50 transition-colors",
+          isSelected && "bg-accent/30",
           "group"
         )}
         style={{ paddingLeft: `${level * 12 + 8}px` }}
         onClick={handleToggle}
         onDoubleClick={handleDoubleClick}
       >
+        {/* Checkbox for context selection */}
+        <button
+          onClick={handleCheckboxChange}
+          className={cn(
+            "shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors",
+            isSelected 
+              ? "bg-primary border-primary text-primary-foreground" 
+              : "border-muted-foreground/30 hover:border-primary/50"
+          )}
+          title={isSelected ? "Remove from chat context" : "Add to chat context"}
+        >
+          {isSelected && (
+            <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none">
+              <path d="M2 6L5 9L10 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          )}
+        </button>
+
         {/* Expand/collapse icon */}
         {canExpand ? (
           <span className="shrink-0 w-4 h-4 flex items-center justify-center">
@@ -316,6 +358,9 @@ function CatalogTreeItem({
               onTableSelect={onTableSelect}
               onLoadChildren={onLoadChildren}
               onLoadDatasetDetails={onLoadDatasetDetails}
+              isSelected={selectedIds.has(child.id)}
+              onToggleSelection={onToggleSelection}
+              selectedIds={selectedIds}
             />
           ))}
           {item.children.length === 0 && !item.isLoading && (
@@ -350,10 +395,19 @@ function CatalogTreeItem({
   )
 }
 
-export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: DremioCatalogProps) {
+export function DremioCatalog({ 
+  credentials, 
+  onTableSelect, 
+  onOpenSettings,
+  selectedItems = [],
+  onSelectionChange
+}: DremioCatalogProps) {
   const [catalog, setCatalog] = useState<CatalogItem[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  
+  // Create a Set of selected IDs for quick lookup
+  const selectedIds = new Set(selectedItems.map(item => item.id))
 
   const fetchCatalog = useCallback(async () => {
     if (!credentials) return
@@ -532,6 +586,52 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
     })
   }
 
+  // Helper to find an item in the tree by ID
+  function findItemInTree(items: CatalogItem[], id: string): CatalogItem | null {
+    for (const item of items) {
+      if (item.id === id) return item
+      if (item.children) {
+        const found = findItemInTree(item.children, id)
+        if (found) return found
+      }
+    }
+    return null
+  }
+
+  // Handle toggling selection of a catalog item
+  const handleToggleSelection = useCallback((item: CatalogItem, selected: boolean) => {
+    if (!onSelectionChange) return
+    
+    // Convert CatalogItem to SelectedCatalogItem
+    const getItemType = (item: CatalogItem): SelectedCatalogItem["type"] => {
+      if (item.type === "DATASET") {
+        return item.datasetType === "VIRTUAL" ? "view" : "table"
+      }
+      if (item.containerType === "SOURCE") return "source"
+      return "folder"
+    }
+
+    // Find the current item in the tree to get its fields if loaded
+    const currentItem = findItemInTree(catalog, item.id)
+    
+    if (selected) {
+      // Add to selection
+      const newSelectedItem: SelectedCatalogItem = {
+        id: item.id,
+        path: item.path,
+        type: getItemType(item),
+        fields: currentItem?.fields?.map(f => ({
+          name: f.name,
+          type: formatColumnType(f.type)
+        }))
+      }
+      onSelectionChange([...selectedItems, newSelectedItem])
+    } else {
+      // Remove from selection
+      onSelectionChange(selectedItems.filter(i => i.id !== item.id))
+    }
+  }, [catalog, selectedItems, onSelectionChange])
+
   useEffect(() => {
     if (credentials) {
       fetchCatalog()
@@ -611,6 +711,9 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
                 onTableSelect={onTableSelect}
                 onLoadChildren={loadChildren}
                 onLoadDatasetDetails={loadDatasetDetails}
+                isSelected={selectedIds.has(item.id)}
+                onToggleSelection={handleToggleSelection}
+                selectedIds={selectedIds}
               />
             ))}
           </div>
@@ -619,9 +722,23 @@ export function DremioCatalog({ credentials, onTableSelect, onOpenSettings }: Dr
 
       {/* Footer hint */}
       <div className="px-3 py-2 border-t border-border/50 shrink-0">
-        <p className="text-[10px] text-muted-foreground">
-          Click a table to insert into query
-        </p>
+        {selectedItems.length > 0 ? (
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] text-primary">
+              {selectedItems.length} item{selectedItems.length !== 1 ? "s" : ""} selected for chat
+            </p>
+            <button
+              onClick={() => onSelectionChange?.([])}
+              className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Clear
+            </button>
+          </div>
+        ) : (
+          <p className="text-[10px] text-muted-foreground">
+            Check items to add context to chat
+          </p>
+        )}
       </div>
     </div>
   )

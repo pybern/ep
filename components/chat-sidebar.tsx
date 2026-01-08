@@ -20,15 +20,18 @@ import {
   Sparkles,
   ChevronRight,
   RefreshCw,
+  Database,
 } from "lucide-react"
+import type { SelectedCatalogItem } from "@/components/dremio-catalog"
 
 interface ChatSidebarProps {
   isOpen: boolean
   onToggle: () => void
   onOpenSettings?: () => void
+  catalogContext?: SelectedCatalogItem[]
 }
 
-export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarProps) {
+export function ChatSidebar({ isOpen, onToggle, onOpenSettings, catalogContext = [] }: ChatSidebarProps) {
   const [credentials, setCredentials] = useState<OpenAICredentials | null>(null)
   const [isCredentialsLoading, setIsCredentialsLoading] = useState(true)
   const [input, setInput] = useState("")
@@ -66,11 +69,37 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
     }
   }, [])
 
-  // Create a unique ID for the chat based on credentials to force re-initialization
+  // Create a unique ID for the chat based on credentials
   const chatId = useMemo(() => {
     if (!credentials) return "chat-unconfigured"
     return `chat-${credentials.baseUrl}-${credentials.model}`
   }, [credentials])
+  
+  // Create a hash of the catalog context for transport invalidation
+  const contextHash = useMemo(() => {
+    return catalogContext.map(c => c.id).sort().join(",")
+  }, [catalogContext])
+
+  // Format catalog context for the system prompt
+  const formatCatalogContext = useCallback((items: SelectedCatalogItem[]): string => {
+    if (items.length === 0) return ""
+    
+    const contextParts = items.map(item => {
+      const path = item.path.join(".")
+      const typeLabel = item.type === "view" ? "View" : item.type === "table" ? "Table" : item.type === "source" ? "Source" : "Folder"
+      
+      let description = `${typeLabel}: ${path}`
+      
+      if (item.fields && item.fields.length > 0) {
+        const columns = item.fields.map(f => `  - ${f.name} (${f.type})`).join("\n")
+        description += `\nColumns:\n${columns}`
+      }
+      
+      return description
+    })
+    
+    return contextParts.join("\n\n")
+  }, [])
 
   // Create the transport with credentials in the body
   const transport = useMemo(() => {
@@ -83,13 +112,14 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
       apiKey: credentials.apiKey,
       model: credentials.model,
       skipSslVerify: credentials.sslVerify === false,
+      catalogContext: formatCatalogContext(catalogContext),
     }
     
     return new TextStreamChatTransport({
       api: "/api/chat",
       body: bodyParams,
     })
-  }, [credentials])
+  }, [credentials, catalogContext, formatCatalogContext])
 
   const {
     messages,
@@ -341,6 +371,32 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
             </div>
           </ScrollArea>
 
+          {/* Context indicator */}
+          {catalogContext.length > 0 && (
+            <div className="border-t border-border/50 px-3 py-2 bg-primary/5">
+              <div className="flex items-center gap-2 text-xs text-primary">
+                <Database className="h-3 w-3" />
+                <span>{catalogContext.length} item{catalogContext.length !== 1 ? "s" : ""} in context</span>
+              </div>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {catalogContext.slice(0, 3).map((item) => (
+                  <span
+                    key={item.id}
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary truncate max-w-[100px]"
+                    title={item.path.join(".")}
+                  >
+                    {item.path[item.path.length - 1]}
+                  </span>
+                ))}
+                {catalogContext.length > 3 && (
+                  <span className="text-[10px] text-muted-foreground">
+                    +{catalogContext.length - 3} more
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Input Area */}
           <div className="border-t border-border/50 p-3 shrink-0">
             <div className="flex gap-2">
@@ -349,7 +405,7 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
                 value={input}
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
-                placeholder="Type a message..."
+                placeholder={catalogContext.length > 0 ? "Ask about the selected data..." : "Type a message..."}
                 className="min-h-[40px] max-h-[200px] resize-none text-sm"
                 disabled={isChatLoading}
               />

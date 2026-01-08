@@ -12,10 +12,34 @@ const insecureAgent = new Agent({
   },
 })
 
+// Build system prompt with optional catalog context
+function buildSystemPrompt(catalogContext?: string): string {
+  const basePrompt = `You are an expert SQL assistant that helps users write, understand, and optimize SQL queries. You specialize in:
+- Writing efficient SQL queries
+- Explaining query logic and structure
+- Suggesting optimizations and best practices
+- Helping understand database schemas and relationships
+- Troubleshooting query errors
+
+Be concise but thorough in your explanations. When writing SQL, use clear formatting with proper indentation.`
+
+  if (catalogContext && catalogContext.trim()) {
+    return `${basePrompt}
+
+The user has selected the following database objects as context for this conversation:
+
+${catalogContext}
+
+Use this schema information to provide accurate and relevant SQL assistance. Reference these tables and columns when appropriate.`
+  }
+
+  return basePrompt
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const { messages, baseUrl, apiKey, model, skipSslVerify } = body
+    const { messages, baseUrl, apiKey, model, skipSslVerify, catalogContext } = body
 
     if (!baseUrl || !apiKey || !model) {
       return new Response(
@@ -33,6 +57,9 @@ export async function POST(req: Request) {
     
     // Convert messages from UI format (with parts) to model format (with content)
     const modelMessages = await convertToModelMessages(messages as UIMessage[])
+    
+    // Build system prompt with catalog context if provided
+    const systemPrompt = buildSystemPrompt(catalogContext)
 
     // Normalize base URL - ensure it ends with /v1
     let normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "")
@@ -80,9 +107,10 @@ export async function POST(req: Request) {
       fetch: customFetch,
     })
 
-    // Stream the response using the converted model messages
+    // Stream the response using the converted model messages with system prompt
     const result = streamText({
       model: provider(model),
+      system: systemPrompt,
       messages: modelMessages,
       temperature: 0.7,
     })
