@@ -441,22 +441,37 @@ export function DataContextSelector({
 
   if (!credentials) {
     return (
-      <div className="p-3 text-center">
-        <div className="p-2 rounded-full bg-accent/30 inline-block mb-2">
-          <Database className="h-4 w-4 text-muted-foreground" />
+      <div className="p-3">
+        <div className="text-center mb-3">
+          <div className="p-2 rounded-full bg-accent/30 inline-block mb-2">
+            <Database className="h-4 w-4 text-muted-foreground" />
+          </div>
+          <p className="text-[11px] font-medium text-foreground/80 mb-1">
+            Data Context Selector
+          </p>
+          <p className="text-[10px] text-muted-foreground">
+            Connect to Dremio to browse and select tables
+          </p>
         </div>
-        <p className="text-[10px] text-muted-foreground mb-2">
-          Configure Dremio to select data context
-        </p>
+        
+        <div className="bg-accent/10 rounded-md p-2 mb-3">
+          <p className="text-[10px] font-medium text-foreground/70 mb-1">Why add context?</p>
+          <ul className="text-[9px] text-muted-foreground space-y-0.5">
+            <li>• Select multiple tables, views, or datasets</li>
+            <li>• Column schemas are shared with the AI assistant</li>
+            <li>• Get accurate SQL with correct table/column names</li>
+          </ul>
+        </div>
+        
         {onOpenSettings && (
           <Button 
             variant="outline" 
             size="sm" 
             onClick={onOpenSettings}
-            className="h-6 text-[10px] gap-1"
+            className="w-full h-7 text-[10px] gap-1"
           >
             <Settings className="h-3 w-3" />
-            Configure
+            Configure Dremio Connection
           </Button>
         )}
       </div>
@@ -478,22 +493,47 @@ export function DataContextSelector({
           )}
         </span>
         <Columns3 className="h-3.5 w-3.5 text-primary" />
-        <span className="text-xs font-medium flex-1">Data Context</span>
+        <div className="flex-1 min-w-0">
+          <span className="text-xs font-medium">Data Context</span>
+          {!isExpanded && context.tables.length === 0 && (
+            <span className="text-[9px] text-muted-foreground/70 ml-1.5">
+              (select tables for AI)
+            </span>
+          )}
+        </div>
         {context.tables.length > 0 && (
-          <span className="text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-full">
-            {context.tables.length}
+          <span className="text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-full" title={`${context.tables.length} table${context.tables.length !== 1 ? 's' : ''} selected`}>
+            {context.tables.length} table{context.tables.length !== 1 ? 's' : ''}
           </span>
         )}
       </button>
 
       {isExpanded && (
         <div className="border-t border-border/30">
+          {/* Hint Banner */}
+          <div className="px-3 py-2 bg-blue-500/10 border-b border-blue-500/20">
+            <div className="flex items-start gap-2">
+              <div className="shrink-0 mt-0.5">
+                <svg className="h-3.5 w-3.5 text-blue-500" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <div className="text-[10px] text-blue-600 dark:text-blue-400">
+                <p className="font-medium mb-0.5">Select multiple tables for AI context</p>
+                <p className="text-blue-500/80 dark:text-blue-400/70">
+                  Click tables to include their schemas (columns, types) in the AI conversation. 
+                  The more context you provide, the better the assistant can help with your queries.
+                </p>
+              </div>
+            </div>
+          </div>
+
           {/* Selected Tables Summary */}
           {context.tables.length > 0 && (
             <div className="px-3 py-2 border-b border-border/30 bg-accent/10">
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-                  Selected Tables
+                  Selected Tables ({context.tables.length})
                 </span>
                 <button
                   className="text-[10px] text-muted-foreground hover:text-destructive transition-colors"
@@ -502,35 +542,51 @@ export function DataContextSelector({
                   Clear all
                 </button>
               </div>
-              <div className="space-y-1">
+              <div className="space-y-1.5">
                 {context.tables.map(table => (
-                  <div key={table.path} className="flex items-start gap-1 group">
+                  <div key={table.path} className="flex items-start gap-1.5 group bg-background/50 rounded p-1.5">
                     <Table2 className="h-3 w-3 text-primary mt-0.5 shrink-0" />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1">
                         <span className="text-[10px] font-medium truncate" title={table.path}>
                           {table.path.split(".").pop()}
                         </span>
+                        <span className="text-[9px] text-muted-foreground/60 truncate hidden sm:inline" title={table.path}>
+                          ({table.path})
+                        </span>
                         <button
-                          className="opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                           onClick={() => handleRemoveTable(table.path)}
                         >
                           <X className="h-3 w-3 text-muted-foreground hover:text-destructive" />
                         </button>
                       </div>
                       {table.columnsLoading ? (
-                        <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
+                        <div className="flex items-center gap-1 text-[9px] text-muted-foreground mt-0.5">
                           <Loader2 className="h-2 w-2 animate-spin" />
-                          Loading columns...
+                          Loading schema...
                         </div>
                       ) : table.columns.length > 0 ? (
-                        <div className="text-[9px] text-muted-foreground">
-                          {table.columns.length} columns
+                        <div className="text-[9px] text-muted-foreground mt-0.5">
+                          <span className="text-green-600 dark:text-green-400">✓</span> {table.columns.length} columns included in context
                         </div>
-                      ) : null}
+                      ) : (
+                        <div className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5">
+                          No column info available
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
+              </div>
+              
+              {/* Context summary */}
+              <div className="mt-2 pt-2 border-t border-border/30">
+                <p className="text-[9px] text-muted-foreground">
+                  <span className="font-medium text-foreground/80">AI Context:</span>{" "}
+                  {context.tables.length} table{context.tables.length !== 1 ? "s" : ""},{" "}
+                  {context.tables.reduce((sum, t) => sum + t.columns.length, 0)} columns total
+                </p>
               </div>
             </div>
           )}
@@ -538,13 +594,17 @@ export function DataContextSelector({
           {/* Catalog Browser */}
           <div className="px-2 py-1">
             <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] text-muted-foreground">Browse Catalog</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-medium text-muted-foreground">Browse Catalog</span>
+                <span className="text-[9px] text-muted-foreground/60">(click to expand, check to select)</span>
+              </div>
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-5 w-5"
                 onClick={fetchCatalog}
                 disabled={isLoading}
+                title="Refresh catalog"
               >
                 <RefreshCw className={cn("h-3 w-3", isLoading && "animate-spin")} />
               </Button>
@@ -552,8 +612,9 @@ export function DataContextSelector({
             
             <ScrollArea className="h-[200px]">
               {isLoading && catalog.length === 0 ? (
-                <div className="flex items-center justify-center py-4">
-                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                <div className="flex flex-col items-center justify-center py-6">
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground mb-2" />
+                  <p className="text-[10px] text-muted-foreground">Loading catalog...</p>
                 </div>
               ) : error ? (
                 <div className="flex flex-col items-center justify-center py-4 px-2 text-center">
@@ -564,12 +625,24 @@ export function DataContextSelector({
                   </Button>
                 </div>
               ) : catalog.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-4 text-center">
-                  <Folder className="h-4 w-4 text-muted-foreground/30 mb-1" />
-                  <p className="text-[10px] text-muted-foreground">No items found</p>
+                <div className="flex flex-col items-center justify-center py-6 text-center px-4">
+                  <Folder className="h-5 w-5 text-muted-foreground/30 mb-2" />
+                  <p className="text-[10px] text-muted-foreground mb-1">No catalog items found</p>
+                  <p className="text-[9px] text-muted-foreground/60">
+                    Make sure your Dremio connection is configured correctly
+                  </p>
                 </div>
               ) : (
                 <div className="py-1">
+                  {/* Selection hint */}
+                  <div className="px-1 pb-1.5 mb-1 border-b border-border/20">
+                    <p className="text-[9px] text-muted-foreground/70 flex items-center gap-1">
+                      <span className="w-3 h-3 rounded border border-border inline-flex items-center justify-center">
+                        <Check className="h-2 w-2 text-transparent" />
+                      </span>
+                      Click checkbox to select/deselect tables
+                    </p>
+                  </div>
                   {catalog.map((item) => (
                     <CatalogTreeItem
                       key={item.id}
@@ -586,10 +659,22 @@ export function DataContextSelector({
           </div>
 
           {/* Help text */}
-          <div className="px-3 py-1.5 border-t border-border/30 bg-accent/5">
-            <p className="text-[9px] text-muted-foreground">
-              Select tables to include their schema in AI context for better SQL assistance.
-            </p>
+          <div className="px-3 py-2 border-t border-border/30 bg-accent/5">
+            <p className="text-[10px] font-medium text-foreground/80 mb-1">How this helps the AI:</p>
+            <ul className="text-[9px] text-muted-foreground space-y-0.5">
+              <li className="flex items-start gap-1">
+                <span className="text-primary">•</span>
+                <span>Selected table schemas (columns & types) are shared with the assistant</span>
+              </li>
+              <li className="flex items-start gap-1">
+                <span className="text-primary">•</span>
+                <span>AI can write accurate queries using your exact table/column names</span>
+              </li>
+              <li className="flex items-start gap-1">
+                <span className="text-primary">•</span>
+                <span>Select multiple tables to enable JOIN suggestions across datasets</span>
+              </li>
+            </ul>
           </div>
         </div>
       )}
