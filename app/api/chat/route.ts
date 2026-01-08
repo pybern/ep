@@ -1,8 +1,16 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import { streamText } from "ai"
+import { Agent, fetch as undiciFetch } from "undici"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
+
+// Create a reusable agent for SSL bypass
+const insecureAgent = new Agent({
+  connect: {
+    rejectUnauthorized: false,
+  },
+})
 
 export async function POST(req: Request) {
   try {
@@ -31,17 +39,32 @@ export async function POST(req: Request) {
     // Create a custom fetch for SSL verification bypass if needed
     const customFetch = skipSslVerify
       ? async (input: RequestInfo | URL, init?: RequestInit) => {
-          // Use dynamic import to avoid bundling issues
-          const { Agent, fetch: undiciFetch } = await import("undici")
-          const dispatcher = new Agent({
-            connect: {
-              rejectUnauthorized: false,
-            },
+          const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url
+          
+          // Convert headers to a plain object if needed
+          let headers: Record<string, string> = {}
+          if (init?.headers) {
+            if (init.headers instanceof Headers) {
+              init.headers.forEach((value, key) => {
+                headers[key] = value
+              })
+            } else if (Array.isArray(init.headers)) {
+              for (const [key, value] of init.headers) {
+                headers[key] = value
+              }
+            } else {
+              headers = init.headers as Record<string, string>
+            }
+          }
+
+          const response = await undiciFetch(url, {
+            method: init?.method || "GET",
+            headers,
+            body: init?.body as string | undefined,
+            dispatcher: insecureAgent,
           })
-          return undiciFetch(input as Parameters<typeof undiciFetch>[0], {
-            ...init,
-            dispatcher,
-          } as Parameters<typeof undiciFetch>[1]) as unknown as Response
+          
+          return response as unknown as Response
         }
       : undefined
 
