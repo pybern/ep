@@ -39,6 +39,12 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
   useEffect(() => {
     const loadCredentials = () => {
       const stored = getOpenAICredentials()
+      console.log("[ChatSidebar] Loading credentials:", stored ? {
+        baseUrl: stored.baseUrl,
+        model: stored.model,
+        apiKeyLength: stored.apiKey?.length || 0,
+        sslVerify: stored.sslVerify,
+      } : null)
       setCredentials(stored)
       setIsCredentialsLoading(false)
     }
@@ -48,6 +54,7 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
     // Listen for storage changes (in case credentials are updated in settings)
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === "ep_credentials") {
+        console.log("[ChatSidebar] Storage change detected, reloading credentials")
         loadCredentials()
       }
     }
@@ -69,18 +76,75 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
     return `chat-${credentials.baseUrl}-${credentials.model}`
   }, [credentials])
 
-  // Create the transport with credentials in the body
+  // Create the transport with credentials in the body and custom fetch for logging
   const transport = useMemo(() => {
-    if (!credentials) return undefined
+    if (!credentials) {
+      console.log("[ChatSidebar] No credentials, transport is undefined")
+      return undefined
+    }
+    
+    const bodyParams = {
+      baseUrl: credentials.baseUrl,
+      apiKey: credentials.apiKey,
+      model: credentials.model,
+      skipSslVerify: credentials.sslVerify === false,
+    }
+    
+    console.log("[ChatSidebar] Creating TextStreamChatTransport with config:", {
+      api: "/api/chat",
+      body: {
+        baseUrl: bodyParams.baseUrl,
+        model: bodyParams.model,
+        apiKeyLength: bodyParams.apiKey?.length || 0,
+        skipSslVerify: bodyParams.skipSslVerify,
+      }
+    })
+    
+    // Create custom fetch wrapper for logging
+    const loggingFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url
+      
+      console.log("[ChatSidebar Fetch] Request URL:", url)
+      console.log("[ChatSidebar Fetch] Request method:", init?.method || "GET")
+      console.log("[ChatSidebar Fetch] Request headers:", init?.headers)
+      
+      // Log the body but mask the API key
+      if (init?.body) {
+        try {
+          const bodyObj = JSON.parse(init.body as string)
+          console.log("[ChatSidebar Fetch] Request body:", {
+            ...bodyObj,
+            apiKey: bodyObj.apiKey ? `***${bodyObj.apiKey.slice(-4)}` : undefined,
+          })
+        } catch {
+          console.log("[ChatSidebar Fetch] Request body (raw):", init.body)
+        }
+      }
+      
+      try {
+        const response = await fetch(input, init)
+        
+        console.log("[ChatSidebar Fetch] Response status:", response.status, response.statusText)
+        console.log("[ChatSidebar Fetch] Response headers:", Object.fromEntries(response.headers.entries()))
+        
+        // Clone the response so we can read it and still return the original
+        if (!response.ok) {
+          const clonedResponse = response.clone()
+          const errorText = await clonedResponse.text()
+          console.error("[ChatSidebar Fetch] Error response body:", errorText)
+        }
+        
+        return response
+      } catch (err) {
+        console.error("[ChatSidebar Fetch] Network error:", err)
+        throw err
+      }
+    }
     
     return new TextStreamChatTransport({
       api: "/api/chat",
-      body: {
-        baseUrl: credentials.baseUrl,
-        apiKey: credentials.apiKey,
-        model: credentials.model,
-        skipSslVerify: credentials.sslVerify === false,
-      },
+      body: bodyParams,
+      fetch: loggingFetch,
     })
   }, [credentials])
 
@@ -96,9 +160,30 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
     id: chatId,
     transport,
     onError: (err) => {
-      console.error("Chat error:", err)
+      console.error("[ChatSidebar] Chat error:", err)
+      console.error("[ChatSidebar] Error details:", {
+        name: err.name,
+        message: err.message,
+        stack: err.stack,
+      })
     },
   })
+  
+  // Log status changes
+  useEffect(() => {
+    console.log("[ChatSidebar] Status changed:", status)
+    if (error) {
+      console.error("[ChatSidebar] Current error state:", error)
+    }
+  }, [status, error])
+  
+  // Log messages changes
+  useEffect(() => {
+    console.log("[ChatSidebar] Messages updated:", messages.length, "messages")
+    if (messages.length > 0) {
+      console.log("[ChatSidebar] Last message:", messages[messages.length - 1])
+    }
+  }, [messages])
 
   const isChatLoading = status === "submitted" || status === "streaming"
 
@@ -119,8 +204,22 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
 
   // Handle sending a message
   const handleSend = useCallback(() => {
-    if (!input.trim() || !credentials || isChatLoading) return
+    console.log("[ChatSidebar] handleSend called", {
+      inputLength: input.trim().length,
+      hasCredentials: !!credentials,
+      isChatLoading,
+    })
     
+    if (!input.trim() || !credentials || isChatLoading) {
+      console.log("[ChatSidebar] Send blocked:", {
+        noInput: !input.trim(),
+        noCredentials: !credentials,
+        isLoading: isChatLoading,
+      })
+      return
+    }
+    
+    console.log("[ChatSidebar] Sending message:", input.trim().substring(0, 50) + (input.length > 50 ? "..." : ""))
     sendMessage({ text: input.trim() })
     setInput("")
     
@@ -144,12 +243,16 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
 
   // Get the text content from a message
   const getMessageContent = (message: { parts?: Array<{ type: string; text?: string }>; content?: string }): string => {
+    console.log("[ChatSidebar] getMessageContent called with:", JSON.stringify(message, null, 2))
     if (message.parts) {
-      return message.parts
+      const content = message.parts
         .filter(part => part.type === "text")
         .map(part => part.text || "")
         .join("")
+      console.log("[ChatSidebar] Extracted from parts:", content.substring(0, 100))
+      return content
     }
+    console.log("[ChatSidebar] Using message.content:", message.content?.substring(0, 100))
     return message.content || ""
   }
 
@@ -157,6 +260,16 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
     credentials.baseUrl?.trim() !== "" && 
     credentials.apiKey?.trim() !== "" &&
     credentials.model?.trim() !== ""
+  
+  // Log configuration status
+  useEffect(() => {
+    console.log("[ChatSidebar] isConfigured:", isConfigured, {
+      hasCredentials: credentials !== null,
+      hasBaseUrl: credentials?.baseUrl?.trim() !== "",
+      hasApiKey: credentials?.apiKey?.trim() !== "",
+      hasModel: credentials?.model?.trim() !== "",
+    })
+  }, [isConfigured, credentials])
 
   if (!isOpen) {
     return (
