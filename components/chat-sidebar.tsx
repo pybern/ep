@@ -63,6 +63,12 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
     }
   }, [])
 
+  // Create a unique ID for the chat based on credentials to force re-initialization
+  const chatId = useMemo(() => {
+    if (!credentials) return "chat-unconfigured"
+    return `chat-${credentials.baseUrl}-${credentials.model}`
+  }, [credentials])
+
   // Create the transport with credentials in the body
   const transport = useMemo(() => {
     if (!credentials) return undefined
@@ -87,6 +93,7 @@ export function ChatSidebar({ isOpen, onToggle, onOpenSettings }: ChatSidebarPro
     error,
     stop,
   } = useChat({
+    id: chatId,
     transport,
     onError: (err) => {
       console.error("Chat error:", err)
