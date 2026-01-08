@@ -615,6 +615,11 @@ export function DremioCatalog({
     const itemPath = item.path.join(".")
     const isCurrentlySelected = selectedItemsMap.has(itemPath)
 
+    console.log(`[Catalog] Toggle selection: "${itemPath}" (${item.type}${item.containerType ? '/' + item.containerType : ''})`, {
+      currentlySelected: isCurrentlySelected,
+      action: isCurrentlySelected ? 'DESELECT' : 'SELECT'
+    })
+
     if (isCurrentlySelected) {
       // Remove from selection - also remove all descendants
       const newItems = selectedItems.filter(i => {
@@ -624,6 +629,8 @@ export function DremioCatalog({
         if (i.path.startsWith(itemPath + ".")) return false
         return true
       })
+      const removedCount = selectedItems.length - newItems.length
+      console.log(`[Catalog] Deselected "${itemPath}" and ${removedCount - 1} descendants. Remaining: ${newItems.length} items`)
       onSelectionChange(newItems)
     } else {
       // Add to selection
@@ -646,10 +653,12 @@ export function DremioCatalog({
 
       // Add to selection immediately
       let newItems = [...selectedItems, newItem]
+      console.log(`[Catalog] Added "${itemPath}" to selection. Total: ${newItems.length} items`)
       onSelectionChange(newItems)
 
       // If it's a dataset, load its columns
       if (isDataset) {
+        console.log(`[Catalog] Loading columns for dataset: "${itemPath}"...`)
         try {
           const response = await fetch("/api/dremio/catalog", {
             method: "POST",
@@ -670,6 +679,8 @@ export function DremioCatalog({
               type: formatColumnType(field.type)
             }))
 
+            console.log(`[Catalog] ✓ Loaded ${columns.length} columns for "${itemPath}":`, columns.map(c => c.name))
+
             // Update the selection with loaded columns
             const updatedItems = newItems.map(i => 
               i.path === itemPath 
@@ -678,6 +689,7 @@ export function DremioCatalog({
             )
             onSelectionChange(updatedItems)
           } else {
+            console.log(`[Catalog] ⚠ No columns found for "${itemPath}"`)
             // Mark as loaded even if no columns found
             const updatedItems = newItems.map(i => 
               i.path === itemPath 
@@ -699,7 +711,9 @@ export function DremioCatalog({
 
       // If it's a container, recursively select all children
       if (isContainer) {
+        console.log(`[Catalog] Recursively selecting children of container: "${itemPath}"...`)
         newItems = await selectContainerAndChildren(item, newItems, onSelectionChange, credentials)
+        console.log(`[Catalog] ✓ Finished selecting children. Total selected: ${newItems.length} items`)
       }
     }
   }, [credentials, selectedItems, selectedItemsMap, onSelectionChange])
@@ -715,6 +729,7 @@ export function DremioCatalog({
     credentials: DremioCredentials
   ): Promise<SelectedCatalogItem[]> {
     const containerPath = container.path.join(".")
+    console.log(`[Catalog] Fetching children for container: "${containerPath}"...`)
     
     try {
       const response = await fetch("/api/dremio/catalog", {
@@ -731,6 +746,10 @@ export function DremioCatalog({
       const data = await response.json()
 
       if (response.ok && data.children) {
+        const datasets = data.children.filter((c: { type: string }) => c.type === "DATASET")
+        const containers = data.children.filter((c: { type: string }) => c.type === "CONTAINER")
+        console.log(`[Catalog] Found ${data.children.length} children in "${containerPath}": ${datasets.length} datasets, ${containers.length} containers`)
+        
         let updatedItems = [...currentItems]
         const childDatasets: { path: string; columns: SelectedColumn[] }[] = []
         
@@ -753,6 +772,7 @@ export function DremioCatalog({
               columnsLoading: true,
             }
             
+            console.log(`[Catalog]   + Adding child dataset: "${childPath}"`)
             updatedItems = [...updatedItems, datasetItem]
             onSelectionChange(updatedItems)
 
@@ -774,6 +794,8 @@ export function DremioCatalog({
                 name: field.name,
                 type: formatColumnType(field.type)
               }))
+
+              console.log(`[Catalog]     ✓ Loaded ${columns.length} columns for "${childPath}"`)
 
               // Update the dataset with loaded columns
               updatedItems = updatedItems.map(i => 
@@ -807,6 +829,7 @@ export function DremioCatalog({
               childDatasetsLoading: true,
             }
             
+            console.log(`[Catalog]   + Adding nested container: "${childPath}" (${child.containerType})`)
             updatedItems = [...updatedItems, nestedContainerItem]
             onSelectionChange(updatedItems)
 

@@ -47,6 +47,12 @@ export default function Page() {
   }, [])
 
   const handleSelectionChange = useCallback((items: SelectedCatalogItem[]) => {
+    const datasets = items.filter(i => i.type === "DATASET")
+    const containers = items.filter(i => i.type === "CONTAINER")
+    const totalCols = datasets.reduce((sum, d) => sum + d.columns.length, 0)
+    
+    console.log(`[Page] Selection changed: ${items.length} items (${datasets.length} datasets, ${containers.length} containers, ${totalCols} columns loaded)`)
+    
     setSelectedCatalogItems(items)
   }, [])
 

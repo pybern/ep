@@ -83,8 +83,10 @@ export function ChatSidebar({
 
   // Build data context from selected catalog items
   const dataContext = useMemo(() => {
+    console.log(`[ChatSidebar] Building data context from ${selectedCatalogItems.length} selected items...`)
+    
     if (selectedCatalogItems.length === 0) {
-      console.log("[ChatSidebar] No catalog items selected, dataContext is undefined")
+      console.log("[ChatSidebar] ⚠ No catalog items selected - dataContext is undefined")
       return undefined
     }
 
@@ -112,7 +114,10 @@ export function ChatSidebar({
     const totalCols = tables.reduce((sum, t) => sum + t.columns.length, 0) +
       containers.reduce((sum, c) => sum + c.childDatasets.reduce((s, d) => s + d.columns.length, 0), 0)
     
-    console.log(`[ChatSidebar] Data context built: ${tables.length} tables, ${containers.length} containers, ${totalCols} total columns`)
+    console.log(`[ChatSidebar] ✓ Data context built:`)
+    console.log(`[ChatSidebar]   - Tables: ${tables.length}`, tables.map(t => `${t.path} (${t.columns.length} cols)`))
+    console.log(`[ChatSidebar]   - Containers: ${containers.length}`, containers.map(c => `${c.path} (${c.childDatasets.length} datasets)`))
+    console.log(`[ChatSidebar]   - Total columns: ${totalCols}`)
     
     return { tables, containers }
   }, [selectedCatalogItems])
@@ -126,6 +131,7 @@ export function ChatSidebar({
   // Create the transport with credentials and data context in the body
   const transport = useMemo(() => {
     if (!credentials) {
+      console.log("[ChatSidebar] No credentials - transport not created")
       return undefined
     }
     
@@ -136,6 +142,13 @@ export function ChatSidebar({
       skipSslVerify: credentials.sslVerify === false,
       dataContext,
     }
+    
+    console.log(`[ChatSidebar] Creating transport with context:`, {
+      model: credentials.model,
+      hasDataContext: !!dataContext,
+      tablesCount: dataContext?.tables?.length || 0,
+      containersCount: dataContext?.containers?.length || 0,
+    })
     
     return new TextStreamChatTransport({
       api: "/api/chat",
@@ -182,6 +195,13 @@ export function ChatSidebar({
       return
     }
     
+    console.log(`[ChatSidebar] 📤 Sending message:`, {
+      messagePreview: input.trim().substring(0, 100) + (input.length > 100 ? '...' : ''),
+      dataContextIncluded: !!dataContext,
+      tablesInContext: dataContext?.tables?.length || 0,
+      containersInContext: dataContext?.containers?.length || 0,
+    })
+    
     sendMessage({ text: input.trim() })
     setInput("")
     
@@ -189,7 +209,7 @@ export function ChatSidebar({
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto"
     }
-  }, [input, credentials, isChatLoading, sendMessage])
+  }, [input, credentials, isChatLoading, sendMessage, dataContext])
 
   // Handle keyboard shortcuts
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
