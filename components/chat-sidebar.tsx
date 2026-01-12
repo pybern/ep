@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { getOpenAICredentials, OpenAICredentials, DremioCredentials } from "@/lib/credential-store"
 import { SelectedCatalogItem } from "@/components/dremio-catalog"
+import { getNotesForTables, getWorkspaceNotesWithColumns, db } from "@/lib/db"
 import { cn } from "@/lib/utils"
 import {
   MessageSquare,
@@ -48,9 +49,30 @@ const VIEW_MODES = {
 
 type ViewMode = keyof typeof VIEW_MODES
 
+interface ColumnWithNote {
+  name: string
+  type: string
+  note?: string
+}
+
+interface TableWithNotes {
+  path: string
+  columns: ColumnWithNote[]
+  description?: string
+  tags?: string[]
+}
+
+interface ContainerWithNotes {
+  path: string
+  type: string
+  childDatasets: TableWithNotes[]
+}
+
 interface DataContext {
-  tables: { path: string; columns: { name: string; type: string }[] }[]
-  containers: { path: string; type: string; childDatasets: { path: string; columns: { name: string; type: string }[] }[] }[]
+  tables: TableWithNotes[]
+  containers: ContainerWithNotes[]
+  workspaceDescription?: string
+  workspaceName?: string
 }
 
 // Memoized code block component with copy functionality
@@ -173,6 +195,8 @@ interface ChatSidebarProps {
   dremioCredentials?: DremioCredentials | null
   /** Selected catalog items from the sidebar explorer */
   selectedCatalogItems?: SelectedCatalogItem[]
+  /** Active workspace ID for notes context */
+  activeWorkspaceId?: string | null
 }
 
 export function ChatSidebar({ 
@@ -181,7 +205,10 @@ export function ChatSidebar({
   onOpenSettings, 
   dremioCredentials,
   selectedCatalogItems = [],
+  activeWorkspaceId,
 }: ChatSidebarProps) {
+  // activeWorkspaceId will be used in Phase 4 for workspace notes context
+  void activeWorkspaceId
   const [credentials, setCredentials] = useState<OpenAICredentials | null>(null)
   const [isCredentialsLoading, setIsCredentialsLoading] = useState(true)
   const [input, setInput] = useState("")
@@ -263,46 +290,128 @@ export function ChatSidebar({
     }
   }, [])
 
-  // Build data context from selected catalog items
-  const dataContext = useMemo(() => {
-    console.log(`[ChatSidebar] Building data context from ${selectedCatalogItems.length} selected items...`)
-    
-    if (selectedCatalogItems.length === 0) {
-      console.log("[ChatSidebar] ⚠ No catalog items selected - dataContext is undefined")
-      return undefined
-    }
+  // State for data context with notes
+  const [dataContext, setDataContext] = useState<DataContext | undefined>(undefined)
 
-    const tables: { path: string; columns: { name: string; type: string }[] }[] = []
-    const containers: { path: string; type: string; childDatasets: { path: string; columns: { name: string; type: string }[] }[] }[] = []
-
-    for (const item of selectedCatalogItems) {
-      if (item.type === "DATASET") {
-        tables.push({
-          path: item.path,
-          columns: item.columns.map(col => ({ name: col.name, type: col.type }))
-        })
-      } else if (item.type === "CONTAINER") {
-        containers.push({
-          path: item.path,
-          type: item.containerType || "CONTAINER",
-          childDatasets: (item.childDatasets || []).map(ds => ({
-            path: ds.path,
-            columns: ds.columns.map(col => ({ name: col.name, type: col.type }))
-          }))
-        })
+  // Build data context from selected catalog items and workspace notes
+  useEffect(() => {
+    const buildDataContext = async () => {
+      console.log(`[ChatSidebar] Building data context from ${selectedCatalogItems.length} selected items...`)
+      
+      if (selectedCatalogItems.length === 0) {
+        console.log("[ChatSidebar] ⚠ No catalog items selected - dataContext is undefined")
+        setDataContext(undefined)
+        return
       }
+
+      // Collect all table paths for notes lookup
+      const allTablePaths: string[] = []
+      for (const item of selectedCatalogItems) {
+        if (item.type === "DATASET") {
+          allTablePaths.push(item.path)
+        } else if (item.type === "CONTAINER" && item.childDatasets) {
+          for (const ds of item.childDatasets) {
+            allTablePaths.push(ds.path)
+          }
+        }
+      }
+
+      // Fetch notes from workspace if available
+      let notesMap = new Map<string, { tableNote: { description: string; tags: string[] }; columnNotes: { columnName: string; description: string }[] }>()
+      let workspaceName: string | undefined
+      let workspaceDescription: string | undefined
+
+      if (activeWorkspaceId && allTablePaths.length > 0) {
+        try {
+          // Get workspace info
+          const workspace = await db.workspaces.get(activeWorkspaceId)
+          if (workspace) {
+            workspaceName = workspace.name
+            workspaceDescription = workspace.description
+          }
+
+          // Get notes for all table paths
+          const fetchedNotes = await getNotesForTables(activeWorkspaceId, allTablePaths)
+          notesMap = new Map(
+            Array.from(fetchedNotes.entries()).map(([path, data]) => [
+              path,
+              {
+                tableNote: { description: data.tableNote.description, tags: data.tableNote.tags },
+                columnNotes: data.columnNotes.map(cn => ({ columnName: cn.columnName, description: cn.description }))
+              }
+            ])
+          )
+          console.log(`[ChatSidebar] ✓ Loaded notes for ${notesMap.size} tables from workspace "${workspaceName}"`)
+        } catch (err) {
+          console.error("[ChatSidebar] Failed to load workspace notes:", err)
+        }
+      }
+
+      const tables: TableWithNotes[] = []
+      const containers: ContainerWithNotes[] = []
+
+      for (const item of selectedCatalogItems) {
+        if (item.type === "DATASET") {
+          const notes = notesMap.get(item.path)
+          tables.push({
+            path: item.path,
+            columns: item.columns.map(col => {
+              const colNote = notes?.columnNotes.find(cn => cn.columnName === col.name)
+              return { 
+                name: col.name, 
+                type: col.type,
+                note: colNote?.description 
+              }
+            }),
+            description: notes?.tableNote.description,
+            tags: notes?.tableNote.tags,
+          })
+        } else if (item.type === "CONTAINER") {
+          containers.push({
+            path: item.path,
+            type: item.containerType || "CONTAINER",
+            childDatasets: (item.childDatasets || []).map(ds => {
+              const notes = notesMap.get(ds.path)
+              return {
+                path: ds.path,
+                columns: ds.columns.map(col => {
+                  const colNote = notes?.columnNotes.find(cn => cn.columnName === col.name)
+                  return { 
+                    name: col.name, 
+                    type: col.type,
+                    note: colNote?.description 
+                  }
+                }),
+                description: notes?.tableNote.description,
+                tags: notes?.tableNote.tags,
+              }
+            })
+          })
+        }
+      }
+
+      const totalCols = tables.reduce((sum, t) => sum + t.columns.length, 0) +
+        containers.reduce((sum, c) => sum + c.childDatasets.reduce((s, d) => s + d.columns.length, 0), 0)
+      
+      const notesCount = tables.filter(t => t.description).length +
+        containers.reduce((sum, c) => sum + c.childDatasets.filter(d => d.description).length, 0)
+      
+      console.log(`[ChatSidebar] ✓ Data context built:`)
+      console.log(`[ChatSidebar]   - Tables: ${tables.length}`, tables.map(t => `${t.path} (${t.columns.length} cols)`))
+      console.log(`[ChatSidebar]   - Containers: ${containers.length}`, containers.map(c => `${c.path} (${c.childDatasets.length} datasets)`))
+      console.log(`[ChatSidebar]   - Total columns: ${totalCols}`)
+      console.log(`[ChatSidebar]   - Tables with notes: ${notesCount}`)
+      
+      setDataContext({ 
+        tables, 
+        containers, 
+        workspaceName, 
+        workspaceDescription 
+      })
     }
 
-    const totalCols = tables.reduce((sum, t) => sum + t.columns.length, 0) +
-      containers.reduce((sum, c) => sum + c.childDatasets.reduce((s, d) => s + d.columns.length, 0), 0)
-    
-    console.log(`[ChatSidebar] ✓ Data context built:`)
-    console.log(`[ChatSidebar]   - Tables: ${tables.length}`, tables.map(t => `${t.path} (${t.columns.length} cols)`))
-    console.log(`[ChatSidebar]   - Containers: ${containers.length}`, containers.map(c => `${c.path} (${c.childDatasets.length} datasets)`))
-    console.log(`[ChatSidebar]   - Total columns: ${totalCols}`)
-    
-    return { tables, containers }
-  }, [selectedCatalogItems])
+    buildDataContext()
+  }, [selectedCatalogItems, activeWorkspaceId])
 
   // Keep the ref in sync with the latest dataContext - this ensures send-time reads get fresh data
   useEffect(() => {

@@ -43,9 +43,11 @@ import {
   List,
   Check,
   X,
+  StickyNote,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { DremioCredentials } from "@/lib/credential-store"
+import { TableNotesModal } from "@/components/table-notes-modal"
 
 interface DremioCatalogProps {
   credentials: DremioCredentials | null
@@ -59,6 +61,8 @@ interface DremioCatalogProps {
   onSelectionChange?: (items: SelectedCatalogItem[]) => void
   /** Optional view mode controls to render in header */
   viewModeControls?: React.ReactNode
+  /** Active workspace ID for notes */
+  activeWorkspaceId?: string | null
 }
 
 /**
@@ -249,6 +253,8 @@ function CatalogTreeItem({
   selectionEnabled,
   selectedItemsMap,
   onToggleSelection,
+  onEditNotes,
+  activeWorkspaceId,
 }: { 
   item: CatalogItem
   credentials: DremioCredentials
@@ -259,6 +265,8 @@ function CatalogTreeItem({
   selectionEnabled?: boolean
   selectedItemsMap?: Map<string, SelectedCatalogItem>
   onToggleSelection?: (item: CatalogItem) => void
+  onEditNotes?: (item: CatalogItem) => void
+  activeWorkspaceId?: string | null
 }) {
   const [isExpanded, setIsExpanded] = useState(false)
   const isContainer = item.type === "CONTAINER"
@@ -302,6 +310,13 @@ function CatalogTreeItem({
     e.stopPropagation()
     if (selectionEnabled && onToggleSelection) {
       onToggleSelection(item)
+    }
+  }
+
+  const handleEditNotesClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (onEditNotes) {
+      onEditNotes(item)
     }
   }
 
@@ -366,9 +381,19 @@ function CatalogTreeItem({
           {item.path[item.path.length - 1]}
         </span>
         
-        {/* Dataset type badge and insert button */}
+        {/* Dataset type badge and action buttons */}
         {isDataset && (
           <div className="ml-auto flex items-center gap-1">
+            {activeWorkspaceId && (
+              <button
+                onClick={handleEditNotesClick}
+                className="text-[10px] text-amber-500 opacity-0 group-hover:opacity-100 transition-opacity hover:underline flex items-center gap-0.5"
+                title="Edit notes for this table"
+              >
+                <StickyNote className="h-3 w-3" />
+                notes
+              </button>
+            )}
             <button
               onClick={handleInsertClick}
               className="text-[10px] text-primary opacity-0 group-hover:opacity-100 transition-opacity hover:underline"
@@ -409,6 +434,8 @@ function CatalogTreeItem({
               selectionEnabled={selectionEnabled}
               selectedItemsMap={selectedItemsMap}
               onToggleSelection={onToggleSelection}
+              onEditNotes={onEditNotes}
+              activeWorkspaceId={activeWorkspaceId}
             />
           ))}
           {item.children.length === 0 && !item.isLoading && (
@@ -451,10 +478,15 @@ export function DremioCatalog({
   selectedItems = [],
   onSelectionChange,
   viewModeControls,
+  activeWorkspaceId,
 }: DremioCatalogProps) {
   const [catalog, setCatalog] = useState<CatalogItem[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  
+  // Notes modal state
+  const [notesModalOpen, setNotesModalOpen] = useState(false)
+  const [notesModalItem, setNotesModalItem] = useState<CatalogItem | null>(null)
 
   // Create a map of selected items for quick lookup
   const selectedItemsMap = useMemo(() => {
@@ -920,6 +952,12 @@ export function DremioCatalog({
     }
   }, [onSelectionChange])
 
+  // Handle opening notes modal for a dataset
+  const handleEditNotes = useCallback((item: CatalogItem) => {
+    setNotesModalItem(item)
+    setNotesModalOpen(true)
+  }, [])
+
   if (!credentials) {
     return (
       <div className="flex flex-col items-center justify-center h-full p-6 text-center">
@@ -1025,6 +1063,8 @@ export function DremioCatalog({
                 selectionEnabled={selectionEnabled}
                 selectedItemsMap={selectedItemsMap}
                 onToggleSelection={handleToggleSelection}
+                onEditNotes={handleEditNotes}
+                activeWorkspaceId={activeWorkspaceId}
               />
             ))}
           </div>
@@ -1039,6 +1079,23 @@ export function DremioCatalog({
             : "Click a table to insert into query"}
         </p>
       </div>
+
+      {/* Table Notes Modal */}
+      {notesModalItem && (
+        <TableNotesModal
+          open={notesModalOpen}
+          onOpenChange={setNotesModalOpen}
+          workspaceId={activeWorkspaceId ?? null}
+          tablePath={notesModalItem.path.join(".")}
+          columns={(notesModalItem.fields || []).map(f => ({
+            name: f.name,
+            type: formatColumnType(f.type),
+          }))}
+          onSaved={() => {
+            // Could trigger a refresh or update UI here
+          }}
+        />
+      )}
     </div>
   )
 }

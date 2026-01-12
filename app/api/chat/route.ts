@@ -15,25 +15,67 @@ const insecureAgent = new Agent({
 interface ColumnInfo {
   name: string
   type: string
+  note?: string
 }
 
 interface TableContext {
   path: string
   columns: ColumnInfo[]
+  description?: string
+  tags?: string[]
 }
 
 interface ContainerContext {
   path: string
   type: string
-  childDatasets: {
-    path: string
-    columns: ColumnInfo[]
-  }[]
+  childDatasets: TableContext[]
 }
 
 interface DataContext {
   tables?: TableContext[]
   containers?: ContainerContext[]
+  workspaceName?: string
+  workspaceDescription?: string
+}
+
+/**
+ * Format a table with its notes for the system prompt
+ */
+function formatTableForPrompt(table: TableContext): string {
+  let result = `#### \`${table.path}\`\n`
+  
+  // Add table description if available
+  if (table.description) {
+    result += `**Description:** ${table.description}\n\n`
+  }
+  
+  // Add tags if available
+  if (table.tags && table.tags.length > 0) {
+    result += `**Tags:** ${table.tags.join(", ")}\n\n`
+  }
+  
+  // Add columns
+  if (table.columns.length > 0) {
+    // Check if any columns have notes
+    const hasNotes = table.columns.some(col => col.note)
+    
+    if (hasNotes) {
+      result += `| Column | Type | Description |\n|--------|------|-------------|\n`
+      for (const col of table.columns) {
+        result += `| ${col.name} | ${col.type} | ${col.note || "-"} |\n`
+      }
+    } else {
+      result += `| Column | Type |\n|--------|------|\n`
+      for (const col of table.columns) {
+        result += `| ${col.name} | ${col.type} |\n`
+      }
+    }
+  } else {
+    result += `(Column information not available)\n`
+  }
+  
+  result += `\n`
+  return result
 }
 
 /**
@@ -56,7 +98,8 @@ Guidelines:
 - Add comments for complex query logic when helpful
 - Consider performance implications and suggest optimizations when relevant
 - When referencing tables, use the full qualified path (e.g., source.schema.table)
-- Be proactive in describing available data when the user asks about what data is available`
+- Be proactive in describing available data when the user asks about what data is available
+- Pay attention to table and column descriptions provided by the user - they contain important business context`
 
   if (!dataContext || (!dataContext.tables?.length && !dataContext.containers?.length)) {
     return basePrompt + `
@@ -76,21 +119,21 @@ The user has selected the following items for context. Use this information to w
 
 `
 
+  // Add workspace context if available
+  if (dataContext.workspaceName) {
+    schemaContext += `**Workspace:** ${dataContext.workspaceName}\n`
+    if (dataContext.workspaceDescription) {
+      schemaContext += `**Workspace Notes:** ${dataContext.workspaceDescription}\n`
+    }
+    schemaContext += `\n`
+  }
+
   // Add directly selected tables
   if (dataContext.tables && dataContext.tables.length > 0) {
     schemaContext += `### Selected Tables\n\n`
     
     for (const table of dataContext.tables) {
-      schemaContext += `#### \`${table.path}\`\n`
-      if (table.columns.length > 0) {
-        schemaContext += `| Column | Type |\n|--------|------|\n`
-        for (const col of table.columns) {
-          schemaContext += `| ${col.name} | ${col.type} |\n`
-        }
-      } else {
-        schemaContext += `(Column information not available)\n`
-      }
-      schemaContext += `\n`
+      schemaContext += formatTableForPrompt(table)
     }
   }
 
@@ -106,10 +149,30 @@ The user has selected the following items for context. Use this information to w
         
         for (const dataset of container.childDatasets) {
           schemaContext += `##### \`${dataset.path}\`\n`
+          
+          // Add table description if available
+          if (dataset.description) {
+            schemaContext += `**Description:** ${dataset.description}\n\n`
+          }
+          
+          // Add tags if available
+          if (dataset.tags && dataset.tags.length > 0) {
+            schemaContext += `**Tags:** ${dataset.tags.join(", ")}\n\n`
+          }
+          
           if (dataset.columns.length > 0) {
-            schemaContext += `| Column | Type |\n|--------|------|\n`
-            for (const col of dataset.columns) {
-              schemaContext += `| ${col.name} | ${col.type} |\n`
+            const hasNotes = dataset.columns.some(col => col.note)
+            
+            if (hasNotes) {
+              schemaContext += `| Column | Type | Description |\n|--------|------|-------------|\n`
+              for (const col of dataset.columns) {
+                schemaContext += `| ${col.name} | ${col.type} | ${col.note || "-"} |\n`
+              }
+            } else {
+              schemaContext += `| Column | Type |\n|--------|------|\n`
+              for (const col of dataset.columns) {
+                schemaContext += `| ${col.name} | ${col.type} |\n`
+              }
             }
           } else {
             schemaContext += `(Column information not available)\n`
@@ -127,8 +190,9 @@ The user has selected the following items for context. Use this information to w
 
 **Usage Notes:**
 - Reference these exact table and column names when generating SQL
+- Pay special attention to table and column descriptions - they contain business context that helps you understand the data semantics
 - You can suggest JOINs between tables based on column names that appear related
-- When asked "what data do I have?" or similar, list and describe the available tables and columns
+- When asked "what data do I have?" or similar, list and describe the available tables and columns, including their descriptions
 - If the user asks about columns or tables not in this context, let them know they may need to select additional items in the sidebar`
 
   return basePrompt + schemaContext
@@ -164,11 +228,28 @@ export async function POST(req: Request) {
     const containerCount = dataContext?.containers?.length || 0
     const totalColumns = (dataContext?.tables || []).reduce((sum: number, t: TableContext) => sum + t.columns.length, 0) +
       (dataContext?.containers || []).reduce((sum: number, c: ContainerContext) => 
-        sum + (c.childDatasets || []).reduce((s: number, d: { columns: ColumnInfo[] }) => s + d.columns.length, 0), 0)
+        sum + (c.childDatasets || []).reduce((s: number, d: TableContext) => s + d.columns.length, 0), 0)
+    
+    // Count tables with notes
+    const tablesWithNotes = (dataContext?.tables || []).filter((t: TableContext) => t.description).length +
+      (dataContext?.containers || []).reduce((sum: number, c: ContainerContext) => 
+        sum + (c.childDatasets || []).filter((d: TableContext) => d.description).length, 0)
+    
+    // Count columns with notes
+    const columnsWithNotes = (dataContext?.tables || []).reduce((sum: number, t: TableContext) => 
+      sum + t.columns.filter((c: ColumnInfo) => c.note).length, 0) +
+      (dataContext?.containers || []).reduce((sum: number, c: ContainerContext) => 
+        sum + (c.childDatasets || []).reduce((s: number, d: TableContext) => 
+          s + d.columns.filter((col: ColumnInfo) => col.note).length, 0), 0)
     
     console.log(`[Chat API] ═══════════════════════════════════════════════════════`)
     console.log(`[Chat API] 📥 Request received`)
     console.log(`[Chat API] Data context summary: ${tableCount} tables, ${containerCount} containers, ${totalColumns} total columns`)
+    console.log(`[Chat API] Notes: ${tablesWithNotes} tables with descriptions, ${columnsWithNotes} columns with notes`)
+    
+    if (dataContext?.workspaceName) {
+      console.log(`[Chat API] Workspace: "${dataContext.workspaceName}"${dataContext.workspaceDescription ? ' (has description)' : ''}`)
+    }
     
     if (tableCount > 0 || containerCount > 0) {
       console.log(`[Chat API] Tables: ${dataContext?.tables?.map((t: TableContext) => t.path).join(', ') || 'none'}`)
@@ -177,7 +258,8 @@ export async function POST(req: Request) {
       // Log column details for verification
       if (dataContext?.tables) {
         for (const table of dataContext.tables) {
-          console.log(`[Chat API]   └─ ${table.path}: [${table.columns.map((c: ColumnInfo) => c.name).join(', ')}]`)
+          const noteIndicator = table.description ? ' 📝' : ''
+          console.log(`[Chat API]   └─ ${table.path}${noteIndicator}: [${table.columns.map((c: ColumnInfo) => c.name).join(', ')}]`)
         }
       }
     } else {
