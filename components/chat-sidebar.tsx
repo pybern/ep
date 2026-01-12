@@ -307,7 +307,7 @@ export function ChatSidebar({
   }
 
   return (
-    <div className="h-full w-80 border-l border-border/50 bg-card/50 flex flex-col shrink-0">
+    <div className="h-full w-80 border-l border-border/50 bg-card/50 flex flex-col shrink-0 overflow-hidden">
       {/* Header */}
       <div className="h-12 border-b border-border/50 flex items-center px-3 gap-2 shrink-0 bg-card/30">
         <Button
@@ -489,7 +489,7 @@ export function ChatSidebar({
       ) : (
         <>
           {/* Messages Area */}
-          <ScrollArea className="flex-1">
+          <ScrollArea className="flex-1 min-h-0">
             <div className="p-3 space-y-4">
               {messages.length === 0 ? (
                 <div className="text-center py-8">
