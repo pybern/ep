@@ -7,6 +7,7 @@ import {
   Workspace,
   TableNote,
   ColumnNote,
+  LinkedTable,
   createWorkspace,
   updateWorkspace,
   deleteWorkspace,
@@ -18,6 +19,12 @@ import {
   deleteColumnNote,
   getWorkspaceNotesWithColumns,
   getNotesForTables,
+  linkTable,
+  unlinkTable,
+  isTableLinked,
+  getLinkedTables,
+  getLinkedTablePaths,
+  getLinkedTablesWithNotes,
 } from "./db"
 
 const ACTIVE_WORKSPACE_KEY = "ep_active_workspace_id"
@@ -235,6 +242,94 @@ export function useNotesForTables(workspaceId: string | null, tablePaths: string
   }
 }
 
+// ============================================================================
+// Linked Tables Hooks
+// ============================================================================
+
+/**
+ * Hook to manage linked tables within a workspace
+ */
+export function useLinkedTables(workspaceId: string | null) {
+  const linkedTables = useLiveQuery(
+    async () => {
+      if (!workspaceId) return []
+      return db.linkedTables.where("workspaceId").equals(workspaceId).toArray()
+    },
+    [workspaceId]
+  )
+  
+  // Get linked table paths as a Set for quick lookup
+  const linkedTablePaths = useLiveQuery(
+    async () => {
+      if (!workspaceId) return new Set<string>()
+      const tables = await db.linkedTables.where("workspaceId").equals(workspaceId).toArray()
+      return new Set(tables.map(t => t.tablePath))
+    },
+    [workspaceId]
+  )
+  
+  const link = useCallback(async (tablePath: string) => {
+    if (!workspaceId) throw new Error("No active workspace")
+    return linkTable(workspaceId, tablePath)
+  }, [workspaceId])
+  
+  const unlink = useCallback(async (tablePath: string) => {
+    if (!workspaceId) throw new Error("No active workspace")
+    return unlinkTable(workspaceId, tablePath)
+  }, [workspaceId])
+  
+  const checkLinked = useCallback(async (tablePath: string) => {
+    if (!workspaceId) return false
+    return isTableLinked(workspaceId, tablePath)
+  }, [workspaceId])
+  
+  return {
+    linkedTables: linkedTables ?? [],
+    linkedTablePaths: linkedTablePaths ?? new Set<string>(),
+    isLoading: linkedTables === undefined,
+    link,
+    unlink,
+    checkLinked,
+  }
+}
+
+/**
+ * Hook to get linked tables with their notes for a workspace
+ */
+export function useLinkedTablesWithNotes(workspaceId: string | null) {
+  const [data, setData] = useState<{
+    linkedTables: (LinkedTable & { 
+      tableNote?: TableNote & { columnNotes: ColumnNote[] } 
+    })[]
+  } | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
+  
+  const refresh = useCallback(async () => {
+    if (!workspaceId) {
+      setData(null)
+      return
+    }
+    
+    setIsLoading(true)
+    try {
+      const result = await getLinkedTablesWithNotes(workspaceId)
+      setData(result)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [workspaceId])
+  
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+  
+  return {
+    data,
+    isLoading,
+    refresh,
+  }
+}
+
 /**
  * Combined hook for workspace context - useful for components that need
  * both workspace selection and notes management
@@ -243,6 +338,7 @@ export function useWorkspaceContext() {
   const { workspaces, isLoading: workspacesLoading, create, update, remove } = useWorkspaces()
   const { activeWorkspaceId, activeWorkspace, isLoaded, setActive } = useActiveWorkspace()
   const { tableNotes, isLoading: tableNotesLoading, upsert: upsertTable, get: getTable, remove: removeTable } = useTableNotes(activeWorkspaceId)
+  const { linkedTables, linkedTablePaths, isLoading: linkedTablesLoading, link, unlink } = useLinkedTables(activeWorkspaceId)
   
   return {
     // Workspaces
@@ -261,7 +357,13 @@ export function useWorkspaceContext() {
     getTableNote: getTable,
     deleteTableNote: removeTable,
     
+    // Linked tables
+    linkedTables,
+    linkedTablePaths,
+    linkTable: link,
+    unlinkTable: unlink,
+    
     // Loading states
-    isLoading: workspacesLoading || tableNotesLoading || !isLoaded,
+    isLoading: workspacesLoading || tableNotesLoading || linkedTablesLoading || !isLoaded,
   }
 }

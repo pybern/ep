@@ -37,12 +37,23 @@ export interface ColumnNote {
 }
 
 /**
+ * Linked table - represents a table added to a workspace (separate from notes)
+ */
+export interface LinkedTable {
+  id: string
+  workspaceId: string
+  tablePath: string    // e.g., "source.schema.table"
+  addedAt: Date
+}
+
+/**
  * Dexie database instance for workspace notes
  */
 class WorkspaceDatabase extends Dexie {
   workspaces!: EntityTable<Workspace, "id">
   tableNotes!: EntityTable<TableNote, "id">
   columnNotes!: EntityTable<ColumnNote, "id">
+  linkedTables!: EntityTable<LinkedTable, "id">
 
   constructor() {
     super("ep-workspace-notes")
@@ -52,6 +63,14 @@ class WorkspaceDatabase extends Dexie {
       workspaces: "id, name, createdAt, updatedAt",
       tableNotes: "id, workspaceId, tablePath, [workspaceId+tablePath], createdAt, updatedAt",
       columnNotes: "id, tableNoteId, columnName, [tableNoteId+columnName], createdAt, updatedAt",
+    })
+    
+    // Version 2: Add linkedTables for explicit table-to-workspace linking
+    this.version(2).stores({
+      workspaces: "id, name, createdAt, updatedAt",
+      tableNotes: "id, workspaceId, tablePath, [workspaceId+tablePath], createdAt, updatedAt",
+      columnNotes: "id, tableNoteId, columnName, [tableNoteId+columnName], createdAt, updatedAt",
+      linkedTables: "id, workspaceId, tablePath, [workspaceId+tablePath], addedAt",
     })
   }
 }
@@ -96,10 +115,10 @@ export async function updateWorkspace(
 }
 
 /**
- * Helper to delete a workspace and all its related notes
+ * Helper to delete a workspace and all its related data
  */
 export async function deleteWorkspace(id: string): Promise<void> {
-  await db.transaction("rw", [db.workspaces, db.tableNotes, db.columnNotes], async () => {
+  await db.transaction("rw", [db.workspaces, db.tableNotes, db.columnNotes, db.linkedTables], async () => {
     // Get all table notes for this workspace
     const tableNotes = await db.tableNotes.where("workspaceId").equals(id).toArray()
     const tableNoteIds = tableNotes.map(tn => tn.id)
@@ -109,6 +128,9 @@ export async function deleteWorkspace(id: string): Promise<void> {
     
     // Delete all table notes for this workspace
     await db.tableNotes.where("workspaceId").equals(id).delete()
+    
+    // Delete all linked tables for this workspace
+    await db.linkedTables.where("workspaceId").equals(id).delete()
     
     // Delete the workspace
     await db.workspaces.delete(id)
@@ -265,4 +287,111 @@ export async function getNotesForTables(
   }
   
   return result
+}
+
+// ============================================================================
+// Linked Tables Functions
+// ============================================================================
+
+/**
+ * Link a table to a workspace
+ */
+export async function linkTable(workspaceId: string, tablePath: string): Promise<LinkedTable> {
+  // Check if already linked
+  const existing = await db.linkedTables
+    .where("[workspaceId+tablePath]")
+    .equals([workspaceId, tablePath])
+    .first()
+  
+  if (existing) {
+    return existing
+  }
+  
+  const linkedTable: LinkedTable = {
+    id: generateId(),
+    workspaceId,
+    tablePath,
+    addedAt: new Date(),
+  }
+  await db.linkedTables.add(linkedTable)
+  return linkedTable
+}
+
+/**
+ * Unlink a table from a workspace (also removes associated notes)
+ */
+export async function unlinkTable(workspaceId: string, tablePath: string): Promise<void> {
+  await db.transaction("rw", [db.linkedTables, db.tableNotes, db.columnNotes], async () => {
+    // Delete linked table record
+    await db.linkedTables
+      .where("[workspaceId+tablePath]")
+      .equals([workspaceId, tablePath])
+      .delete()
+    
+    // Delete associated table note and column notes
+    const tableNote = await db.tableNotes
+      .where("[workspaceId+tablePath]")
+      .equals([workspaceId, tablePath])
+      .first()
+    
+    if (tableNote) {
+      await db.columnNotes.where("tableNoteId").equals(tableNote.id).delete()
+      await db.tableNotes.delete(tableNote.id)
+    }
+  })
+}
+
+/**
+ * Check if a table is linked to a workspace
+ */
+export async function isTableLinked(workspaceId: string, tablePath: string): Promise<boolean> {
+  const linked = await db.linkedTables
+    .where("[workspaceId+tablePath]")
+    .equals([workspaceId, tablePath])
+    .first()
+  return !!linked
+}
+
+/**
+ * Get all linked tables for a workspace
+ */
+export async function getLinkedTables(workspaceId: string): Promise<LinkedTable[]> {
+  return db.linkedTables.where("workspaceId").equals(workspaceId).toArray()
+}
+
+/**
+ * Get all linked table paths for a workspace (for filtering)
+ */
+export async function getLinkedTablePaths(workspaceId: string): Promise<Set<string>> {
+  const linkedTables = await db.linkedTables.where("workspaceId").equals(workspaceId).toArray()
+  return new Set(linkedTables.map(lt => lt.tablePath))
+}
+
+/**
+ * Get linked tables with their notes for a workspace
+ */
+export async function getLinkedTablesWithNotes(workspaceId: string): Promise<{
+  linkedTables: (LinkedTable & { 
+    tableNote?: TableNote & { columnNotes: ColumnNote[] } 
+  })[]
+}> {
+  const linkedTables = await db.linkedTables.where("workspaceId").equals(workspaceId).toArray()
+  
+  const linkedTablesWithNotes = await Promise.all(
+    linkedTables.map(async (linkedTable) => {
+      const tableNote = await db.tableNotes
+        .where("[workspaceId+tablePath]")
+        .equals([workspaceId, linkedTable.tablePath])
+        .first()
+      
+      if (tableNote) {
+        const columnNotes = await db.columnNotes.where("tableNoteId").equals(tableNote.id).toArray()
+        return { ...linkedTable, tableNote: { ...tableNote, columnNotes } }
+      }
+      
+      return linkedTable
+    })
+  )
+  
+  return { linkedTables: linkedTablesWithNotes }
 }

@@ -9,7 +9,9 @@ import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { getOpenAICredentials, OpenAICredentials, DremioCredentials } from "@/lib/credential-store"
 import { SelectedCatalogItem } from "@/components/dremio-catalog"
-import { getNotesForTables, getWorkspaceNotesWithColumns, db } from "@/lib/db"
+import { getLinkedTablesWithNotes, db, Workspace, createWorkspace } from "@/lib/db"
+import { useWorkspaces, useActiveWorkspace } from "@/lib/use-workspace"
+import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import {
   MessageSquare,
@@ -33,6 +35,10 @@ import {
   Columns2,
   Square,
   RectangleHorizontal,
+  FolderOpen,
+  Plus,
+  Pencil,
+  StickyNote,
 } from "lucide-react"
 
 // Constants for resize constraints
@@ -195,8 +201,8 @@ interface ChatSidebarProps {
   dremioCredentials?: DremioCredentials | null
   /** Selected catalog items from the sidebar explorer */
   selectedCatalogItems?: SelectedCatalogItem[]
-  /** Active workspace ID for notes context */
-  activeWorkspaceId?: string | null
+  /** Callback when active workspace changes */
+  onWorkspaceChange?: (workspaceId: string | null) => void
 }
 
 export function ChatSidebar({ 
@@ -205,16 +211,28 @@ export function ChatSidebar({
   onOpenSettings, 
   dremioCredentials,
   selectedCatalogItems = [],
-  activeWorkspaceId,
+  onWorkspaceChange,
 }: ChatSidebarProps) {
-  // activeWorkspaceId will be used in Phase 4 for workspace notes context
-  void activeWorkspaceId
   const [credentials, setCredentials] = useState<OpenAICredentials | null>(null)
   const [isCredentialsLoading, setIsCredentialsLoading] = useState(true)
   const [input, setInput] = useState("")
   const [contextExpanded, setContextExpanded] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
+  
+  // Workspace state
+  const { workspaces, isLoading: workspacesLoading, create: createWs } = useWorkspaces()
+  const { activeWorkspaceId, activeWorkspace, setActive: setActiveWorkspace, isLoaded: workspaceLoaded } = useActiveWorkspace()
+  const [showCreateWorkspace, setShowCreateWorkspace] = useState(false)
+  const [newWorkspaceName, setNewWorkspaceName] = useState("")
+  const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false)
+  
+  // Notify parent when workspace changes
+  useEffect(() => {
+    if (workspaceLoaded && onWorkspaceChange) {
+      onWorkspaceChange(activeWorkspaceId)
+    }
+  }, [activeWorkspaceId, workspaceLoaded, onWorkspaceChange])
   
   // Determine current view mode based on width
   const currentViewMode = useMemo((): ViewMode | null => {
@@ -293,10 +311,56 @@ export function ChatSidebar({
   // State for data context with notes
   const [dataContext, setDataContext] = useState<DataContext | undefined>(undefined)
 
-  // Build data context from selected catalog items and workspace notes
+  // Build data context from workspace linked tables (when workspace selected)
+  // or from selected catalog items (when "All" is selected)
   useEffect(() => {
     const buildDataContext = async () => {
-      console.log(`[ChatSidebar] Building data context from ${selectedCatalogItems.length} selected items...`)
+      // When a workspace is selected, use linked tables with notes
+      if (activeWorkspaceId) {
+        console.log(`[ChatSidebar] Building data context from workspace "${activeWorkspaceId}"...`)
+        
+        try {
+          // Get workspace info and linked tables with notes
+          const workspace = await db.workspaces.get(activeWorkspaceId)
+          const linkedData = await getLinkedTablesWithNotes(activeWorkspaceId)
+          
+          if (!linkedData.linkedTables.length) {
+            console.log("[ChatSidebar] ⚠ Workspace has no linked tables - dataContext is undefined")
+            setDataContext(undefined)
+            return
+          }
+          
+          const tables: TableWithNotes[] = linkedData.linkedTables.map(lt => ({
+            path: lt.tablePath,
+            columns: lt.tableNote?.columnNotes.map(cn => ({
+              name: cn.columnName,
+              type: "", // Type not stored in notes - will be empty
+              note: cn.description,
+            })) || [],
+            description: lt.tableNote?.description,
+            tags: lt.tableNote?.tags,
+          }))
+          
+          console.log(`[ChatSidebar] ✓ Data context built from workspace:`)
+          console.log(`[ChatSidebar]   - Workspace: "${workspace?.name}"`)
+          console.log(`[ChatSidebar]   - Linked tables: ${tables.length}`)
+          console.log(`[ChatSidebar]   - Tables with notes: ${tables.filter(t => t.description).length}`)
+          
+          setDataContext({
+            tables,
+            containers: [],
+            workspaceName: workspace?.name,
+            workspaceDescription: workspace?.description,
+          })
+        } catch (err) {
+          console.error("[ChatSidebar] Failed to load workspace data:", err)
+          setDataContext(undefined)
+        }
+        return
+      }
+      
+      // When "All" is selected (no workspace), use selected catalog items without notes
+      console.log(`[ChatSidebar] Building data context from ${selectedCatalogItems.length} selected items (no workspace)...`)
       
       if (selectedCatalogItems.length === 0) {
         console.log("[ChatSidebar] ⚠ No catalog items selected - dataContext is undefined")
@@ -304,88 +368,29 @@ export function ChatSidebar({
         return
       }
 
-      // Collect all table paths for notes lookup
-      const allTablePaths: string[] = []
-      for (const item of selectedCatalogItems) {
-        if (item.type === "DATASET") {
-          allTablePaths.push(item.path)
-        } else if (item.type === "CONTAINER" && item.childDatasets) {
-          for (const ds of item.childDatasets) {
-            allTablePaths.push(ds.path)
-          }
-        }
-      }
-
-      // Fetch notes from workspace if available
-      let notesMap = new Map<string, { tableNote: { description: string; tags: string[] }; columnNotes: { columnName: string; description: string }[] }>()
-      let workspaceName: string | undefined
-      let workspaceDescription: string | undefined
-
-      if (activeWorkspaceId && allTablePaths.length > 0) {
-        try {
-          // Get workspace info
-          const workspace = await db.workspaces.get(activeWorkspaceId)
-          if (workspace) {
-            workspaceName = workspace.name
-            workspaceDescription = workspace.description
-          }
-
-          // Get notes for all table paths
-          const fetchedNotes = await getNotesForTables(activeWorkspaceId, allTablePaths)
-          notesMap = new Map(
-            Array.from(fetchedNotes.entries()).map(([path, data]) => [
-              path,
-              {
-                tableNote: { description: data.tableNote.description, tags: data.tableNote.tags },
-                columnNotes: data.columnNotes.map(cn => ({ columnName: cn.columnName, description: cn.description }))
-              }
-            ])
-          )
-          console.log(`[ChatSidebar] ✓ Loaded notes for ${notesMap.size} tables from workspace "${workspaceName}"`)
-        } catch (err) {
-          console.error("[ChatSidebar] Failed to load workspace notes:", err)
-        }
-      }
-
       const tables: TableWithNotes[] = []
       const containers: ContainerWithNotes[] = []
 
       for (const item of selectedCatalogItems) {
         if (item.type === "DATASET") {
-          const notes = notesMap.get(item.path)
           tables.push({
             path: item.path,
-            columns: item.columns.map(col => {
-              const colNote = notes?.columnNotes.find(cn => cn.columnName === col.name)
-              return { 
-                name: col.name, 
-                type: col.type,
-                note: colNote?.description 
-              }
-            }),
-            description: notes?.tableNote.description,
-            tags: notes?.tableNote.tags,
+            columns: item.columns.map(col => ({ 
+              name: col.name, 
+              type: col.type,
+            })),
           })
         } else if (item.type === "CONTAINER") {
           containers.push({
             path: item.path,
             type: item.containerType || "CONTAINER",
-            childDatasets: (item.childDatasets || []).map(ds => {
-              const notes = notesMap.get(ds.path)
-              return {
-                path: ds.path,
-                columns: ds.columns.map(col => {
-                  const colNote = notes?.columnNotes.find(cn => cn.columnName === col.name)
-                  return { 
-                    name: col.name, 
-                    type: col.type,
-                    note: colNote?.description 
-                  }
-                }),
-                description: notes?.tableNote.description,
-                tags: notes?.tableNote.tags,
-              }
-            })
+            childDatasets: (item.childDatasets || []).map(ds => ({
+              path: ds.path,
+              columns: ds.columns.map(col => ({ 
+                name: col.name, 
+                type: col.type,
+              })),
+            }))
           })
         }
       }
@@ -393,20 +398,14 @@ export function ChatSidebar({
       const totalCols = tables.reduce((sum, t) => sum + t.columns.length, 0) +
         containers.reduce((sum, c) => sum + c.childDatasets.reduce((s, d) => s + d.columns.length, 0), 0)
       
-      const notesCount = tables.filter(t => t.description).length +
-        containers.reduce((sum, c) => sum + c.childDatasets.filter(d => d.description).length, 0)
-      
-      console.log(`[ChatSidebar] ✓ Data context built:`)
-      console.log(`[ChatSidebar]   - Tables: ${tables.length}`, tables.map(t => `${t.path} (${t.columns.length} cols)`))
-      console.log(`[ChatSidebar]   - Containers: ${containers.length}`, containers.map(c => `${c.path} (${c.childDatasets.length} datasets)`))
+      console.log(`[ChatSidebar] ✓ Data context built (no workspace):`)
+      console.log(`[ChatSidebar]   - Tables: ${tables.length}`)
+      console.log(`[ChatSidebar]   - Containers: ${containers.length}`)
       console.log(`[ChatSidebar]   - Total columns: ${totalCols}`)
-      console.log(`[ChatSidebar]   - Tables with notes: ${notesCount}`)
       
       setDataContext({ 
         tables, 
-        containers, 
-        workspaceName, 
-        workspaceDescription 
+        containers,
       })
     }
 
@@ -672,6 +671,130 @@ export function ChatSidebar({
           <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
             <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
             <span className="truncate max-w-[60px]">{credentials.model}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Workspace Selector */}
+      <div className="border-b border-border/50 px-3 py-2 shrink-0">
+        <div className="flex items-center gap-2 mb-2">
+          <FolderOpen className="h-3.5 w-3.5 text-amber-500" />
+          <span className="text-xs font-medium">Workspace</span>
+        </div>
+        
+        {workspacesLoading ? (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Loading...
+          </div>
+        ) : showCreateWorkspace ? (
+          <div className="space-y-2">
+            <Input
+              placeholder="Workspace name..."
+              value={newWorkspaceName}
+              onChange={(e) => setNewWorkspaceName(e.target.value)}
+              className="h-7 text-xs"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && newWorkspaceName.trim()) {
+                  setIsCreatingWorkspace(true)
+                  createWs(newWorkspaceName.trim()).then((ws) => {
+                    setActiveWorkspace(ws.id)
+                    setNewWorkspaceName("")
+                    setShowCreateWorkspace(false)
+                    setIsCreatingWorkspace(false)
+                  })
+                } else if (e.key === "Escape") {
+                  setShowCreateWorkspace(false)
+                  setNewWorkspaceName("")
+                }
+              }}
+            />
+            <div className="flex gap-1">
+              <Button
+                size="sm"
+                className="h-6 text-xs flex-1"
+                disabled={!newWorkspaceName.trim() || isCreatingWorkspace}
+                onClick={() => {
+                  setIsCreatingWorkspace(true)
+                  createWs(newWorkspaceName.trim()).then((ws) => {
+                    setActiveWorkspace(ws.id)
+                    setNewWorkspaceName("")
+                    setShowCreateWorkspace(false)
+                    setIsCreatingWorkspace(false)
+                  })
+                }}
+              >
+                {isCreatingWorkspace ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  "Create"
+                )}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 text-xs"
+                onClick={() => {
+                  setShowCreateWorkspace(false)
+                  setNewWorkspaceName("")
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {/* All option */}
+            <button
+              className={cn(
+                "w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs transition-colors",
+                !activeWorkspaceId 
+                  ? "bg-primary/10 text-primary" 
+                  : "hover:bg-accent/50 text-muted-foreground"
+              )}
+              onClick={() => setActiveWorkspace(null)}
+            >
+              <Database className="h-3 w-3" />
+              <span className="flex-1 text-left">All (no workspace)</span>
+              {!activeWorkspaceId && <Check className="h-3 w-3" />}
+            </button>
+            
+            {/* Workspace list */}
+            {workspaces.map((ws) => (
+              <button
+                key={ws.id}
+                className={cn(
+                  "w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs transition-colors",
+                  activeWorkspaceId === ws.id 
+                    ? "bg-primary/10 text-primary" 
+                    : "hover:bg-accent/50 text-foreground"
+                )}
+                onClick={() => setActiveWorkspace(ws.id)}
+              >
+                <StickyNote className="h-3 w-3" />
+                <span className="flex-1 text-left truncate">{ws.name}</span>
+                {activeWorkspaceId === ws.id && <Check className="h-3 w-3" />}
+              </button>
+            ))}
+            
+            {/* New workspace button */}
+            <button
+              className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-accent/50 text-primary transition-colors"
+              onClick={() => setShowCreateWorkspace(true)}
+            >
+              <Plus className="h-3 w-3" />
+              <span>New workspace</span>
+            </button>
+          </div>
+        )}
+        
+        {activeWorkspace && (
+          <div className="mt-2 pt-2 border-t border-border/30">
+            <p className="text-[10px] text-muted-foreground truncate" title={activeWorkspace.description || "No description"}>
+              {activeWorkspace.description || "No description"}
+            </p>
           </div>
         )}
       </div>

@@ -44,9 +44,14 @@ import {
   Check,
   X,
   StickyNote,
+  Plus,
+  Link,
+  Unlink,
+  Filter,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { DremioCredentials } from "@/lib/credential-store"
+import { useLinkedTables } from "@/lib/use-workspace"
 import { TableNotesModal } from "@/components/table-notes-modal"
 
 interface DremioCatalogProps {
@@ -255,6 +260,10 @@ function CatalogTreeItem({
   onToggleSelection,
   onEditNotes,
   activeWorkspaceId,
+  linkedTablePaths,
+  onLinkTable,
+  onUnlinkTable,
+  showLinkedOnly,
 }: { 
   item: CatalogItem
   credentials: DremioCredentials
@@ -267,14 +276,25 @@ function CatalogTreeItem({
   onToggleSelection?: (item: CatalogItem) => void
   onEditNotes?: (item: CatalogItem) => void
   activeWorkspaceId?: string | null
+  linkedTablePaths?: Set<string>
+  onLinkTable?: (tablePath: string) => Promise<unknown>
+  onUnlinkTable?: (tablePath: string) => Promise<void>
+  showLinkedOnly?: boolean
 }) {
   const [isExpanded, setIsExpanded] = useState(false)
+  const [isLinking, setIsLinking] = useState(false)
   const isContainer = item.type === "CONTAINER"
   const isDataset = item.type === "DATASET"
   // All containers can expand, and datasets can expand to show columns
   const canExpand = isContainer || isDataset
   const itemPath = item.path.join(".")
   const isSelected = selectedItemsMap?.has(itemPath) ?? false
+  const isLinked = linkedTablePaths?.has(itemPath) ?? false
+  
+  // When filtering linked only: hide unlinked datasets, always show containers
+  if (showLinkedOnly && isDataset && !isLinked) {
+    return null
+  }
   
   const handleToggle = async () => {
     if (!canExpand) return
@@ -317,6 +337,30 @@ function CatalogTreeItem({
     e.stopPropagation()
     if (onEditNotes) {
       onEditNotes(item)
+    }
+  }
+
+  const handleLinkClick = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (onLinkTable && !isLinking) {
+      setIsLinking(true)
+      try {
+        await onLinkTable(itemPath)
+      } finally {
+        setIsLinking(false)
+      }
+    }
+  }
+
+  const handleUnlinkClick = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (onUnlinkTable && !isLinking) {
+      setIsLinking(true)
+      try {
+        await onUnlinkTable(itemPath)
+      } finally {
+        setIsLinking(false)
+      }
     }
   }
 
@@ -381,18 +425,49 @@ function CatalogTreeItem({
           {item.path[item.path.length - 1]}
         </span>
         
+        {/* Linked indicator */}
+        {isDataset && isLinked && (
+          <span className="shrink-0 h-1.5 w-1.5 rounded-full bg-amber-500" title="Linked to workspace" />
+        )}
+        
         {/* Dataset type badge and action buttons */}
         {isDataset && (
           <div className="ml-auto flex items-center gap-1">
+            {/* When workspace is selected */}
             {activeWorkspaceId && (
-              <button
-                onClick={handleEditNotesClick}
-                className="text-[10px] text-amber-500 opacity-0 group-hover:opacity-100 transition-opacity hover:underline flex items-center gap-0.5"
-                title="Edit notes for this table"
-              >
-                <StickyNote className="h-3 w-3" />
-                notes
-              </button>
+              isLinked ? (
+                <>
+                  {/* Edit notes button for linked tables */}
+                  <button
+                    onClick={handleEditNotesClick}
+                    className="text-[10px] text-amber-500 opacity-0 group-hover:opacity-100 transition-opacity hover:underline flex items-center gap-0.5"
+                    title="Edit notes for this table"
+                  >
+                    <StickyNote className="h-3 w-3" />
+                    notes
+                  </button>
+                  {/* Unlink button */}
+                  <button
+                    onClick={handleUnlinkClick}
+                    disabled={isLinking}
+                    className="text-[10px] text-destructive/70 opacity-0 group-hover:opacity-100 transition-opacity hover:underline flex items-center gap-0.5 disabled:opacity-50"
+                    title="Remove from workspace"
+                  >
+                    {isLinking ? <Loader2 className="h-3 w-3 animate-spin" /> : <Unlink className="h-3 w-3" />}
+                  </button>
+                </>
+              ) : (
+                /* Add to workspace button for unlinked tables */
+                <button
+                  onClick={handleLinkClick}
+                  disabled={isLinking}
+                  className="text-[10px] text-green-500 opacity-0 group-hover:opacity-100 transition-opacity hover:underline flex items-center gap-0.5 disabled:opacity-50"
+                  title="Add to workspace"
+                >
+                  {isLinking ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+                  add
+                </button>
+              )
             )}
             <button
               onClick={handleInsertClick}
@@ -436,6 +511,10 @@ function CatalogTreeItem({
               onToggleSelection={onToggleSelection}
               onEditNotes={onEditNotes}
               activeWorkspaceId={activeWorkspaceId}
+              linkedTablePaths={linkedTablePaths}
+              onLinkTable={onLinkTable}
+              onUnlinkTable={onUnlinkTable}
+              showLinkedOnly={showLinkedOnly}
             />
           ))}
           {item.children.length === 0 && !item.isLoading && (
@@ -487,6 +566,19 @@ export function DremioCatalog({
   // Notes modal state
   const [notesModalOpen, setNotesModalOpen] = useState(false)
   const [notesModalItem, setNotesModalItem] = useState<CatalogItem | null>(null)
+  
+  // Filter state - show only linked tables
+  const [showLinkedOnly, setShowLinkedOnly] = useState(false)
+  
+  // Linked tables hook - only active when a workspace is selected
+  const { linkedTablePaths, link: linkTable, unlink: unlinkTable } = useLinkedTables(activeWorkspaceId ?? null)
+  
+  // Reset filter when workspace changes
+  useEffect(() => {
+    if (!activeWorkspaceId) {
+      setShowLinkedOnly(false)
+    }
+  }, [activeWorkspaceId])
 
   // Create a map of selected items for quick lookup
   const selectedItemsMap = useMemo(() => {
@@ -998,6 +1090,21 @@ export function DremioCatalog({
         </div>
         <div className="flex items-center gap-1.5">
           {viewModeControls}
+          {/* Show linked only filter - only when workspace is selected */}
+          {activeWorkspaceId && (
+            <Button
+              variant={showLinkedOnly ? "default" : "ghost"}
+              size="icon"
+              className={cn(
+                "h-6 w-6",
+                showLinkedOnly ? "bg-amber-500/20 text-amber-600 hover:bg-amber-500/30 hover:text-amber-600" : "text-muted-foreground"
+              )}
+              onClick={() => setShowLinkedOnly(!showLinkedOnly)}
+              title={showLinkedOnly ? "Show all tables" : "Show linked tables only"}
+            >
+              <Filter className="h-3.5 w-3.5" />
+            </Button>
+          )}
           {selectionEnabled && selectedCount > 0 && (
             <Button
               variant="ghost"
@@ -1065,6 +1172,10 @@ export function DremioCatalog({
                 onToggleSelection={handleToggleSelection}
                 onEditNotes={handleEditNotes}
                 activeWorkspaceId={activeWorkspaceId}
+                linkedTablePaths={linkedTablePaths}
+                onLinkTable={linkTable}
+                onUnlinkTable={unlinkTable}
+                showLinkedOnly={showLinkedOnly}
               />
             ))}
           </div>

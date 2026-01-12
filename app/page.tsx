@@ -6,8 +6,6 @@ import { SqlEditor } from "@/components/sql-editor"
 import { DremioCatalog, SelectedCatalogItem } from "@/components/dremio-catalog"
 import { ChatSidebar } from "@/components/chat-sidebar"
 import { DremioCredentials, getDremioCredentials } from "@/lib/credential-store"
-import { useActiveWorkspace } from "@/lib/use-workspace"
-import { WorkspaceSelector } from "@/components/workspace-selector"
 import { Database, PanelLeftClose, PanelLeft, MessageSquare, GripVertical, Square, Columns2, RectangleHorizontal } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/ui/theme-toggle"
@@ -34,10 +32,8 @@ export default function Page() {
   const [selectedCatalogItems, setSelectedCatalogItems] = useState<SelectedCatalogItem[]>([])
   const [catalogWidth, setCatalogWidth] = useState(CATALOG_DEFAULT_WIDTH)
   const [isCatalogResizing, setIsCatalogResizing] = useState(false)
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null)
   const openSettingsRef = useRef<(() => void) | null>(null)
-  
-  // Workspace context
-  const { activeWorkspaceId } = useActiveWorkspace()
 
   // Load credentials on mount
   useEffect(() => {
@@ -214,11 +210,6 @@ export default function Page() {
 
           <div className="flex-1" />
 
-          {/* Workspace Selector */}
-          <WorkspaceSelector />
-
-          <div className="h-4 w-px bg-border/50" />
-
           {credentials ? (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
@@ -265,7 +256,7 @@ export default function Page() {
         onOpenSettings={handleOpenSettings}
         dremioCredentials={credentials}
         selectedCatalogItems={selectedCatalogItems}
-        activeWorkspaceId={activeWorkspaceId}
+        onWorkspaceChange={setActiveWorkspaceId}
       />
 
       {/* Floating Widget */}

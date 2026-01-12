@@ -24,6 +24,7 @@ import {
   Columns3,
   Tag,
   FileText,
+  Unlink,
 } from "lucide-react"
 import { 
   TableNote, 
@@ -34,6 +35,7 @@ import {
   upsertColumnNote,
   getColumnNotes,
   deleteColumnNote,
+  unlinkTable,
 } from "@/lib/db"
 import { cn } from "@/lib/utils"
 
@@ -53,6 +55,8 @@ interface TableNotesModalProps {
   columns: ColumnInfo[]
   /** Callback when notes are saved */
   onSaved?: () => void
+  /** Callback when table is unlinked from workspace */
+  onUnlinked?: () => void
 }
 
 interface ColumnNoteState {
@@ -69,10 +73,12 @@ export function TableNotesModal({
   tablePath,
   columns,
   onSaved,
+  onUnlinked,
 }: TableNotesModalProps) {
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [isUnlinking, setIsUnlinking] = useState(false)
   
   // Table note state
   const [tableNoteId, setTableNoteId] = useState<string | null>(null)
@@ -194,6 +200,19 @@ export function TableNotesModal({
       onOpenChange(false)
     } finally {
       setIsDeleting(false)
+    }
+  }
+
+  const handleUnlink = async () => {
+    if (!workspaceId) return
+    
+    setIsUnlinking(true)
+    try {
+      await unlinkTable(workspaceId, tablePath)
+      onUnlinked?.()
+      onOpenChange(false)
+    } finally {
+      setIsUnlinking(false)
     }
   }
 
@@ -358,28 +377,39 @@ export function TableNotesModal({
         )}
 
         <DialogFooter className="flex-col-reverse sm:flex-row gap-2 pt-4 border-t">
-          {tableNoteId && (
+          <div className="flex gap-2 sm:mr-auto">
+            {tableNoteId && (
+              <Button
+                variant="outline"
+                onClick={handleDelete}
+                disabled={isSaving || isDeleting || isUnlinking || isLoading}
+                className="text-destructive hover:text-destructive"
+              >
+                {isDeleting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete Notes
+              </Button>
+            )}
             <Button
               variant="destructive"
-              onClick={handleDelete}
-              disabled={isSaving || isDeleting || isLoading}
-              className="sm:mr-auto"
+              onClick={handleUnlink}
+              disabled={isSaving || isDeleting || isUnlinking || isLoading}
             >
-              {isDeleting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete Notes
+              {isUnlinking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              <Unlink className="mr-2 h-4 w-4" />
+              Remove from Workspace
             </Button>
-          )}
+          </div>
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}
-            disabled={isSaving || isDeleting}
+            disabled={isSaving || isDeleting || isUnlinking}
           >
             Cancel
           </Button>
           <Button 
             onClick={handleSave} 
-            disabled={!workspaceId || isSaving || isDeleting || isLoading}
+            disabled={!workspaceId || isSaving || isDeleting || isUnlinking || isLoading}
           >
             {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             <Save className="mr-2 h-4 w-4" />
