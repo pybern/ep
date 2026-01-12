@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react"
+import { useState, useRef, useEffect, useCallback, useMemo, memo, PointerEvent as ReactPointerEvent } from "react"
 import { useChat } from "@ai-sdk/react"
 import { TextStreamChatTransport } from "ai"
 import ReactMarkdown from "react-markdown"
@@ -28,7 +28,25 @@ import {
   ChevronDown,
   Copy,
   Check,
+  GripVertical,
+  Columns2,
+  Square,
+  RectangleHorizontal,
 } from "lucide-react"
+
+// Constants for resize constraints
+const MIN_WIDTH = 320
+const MAX_WIDTH = 700
+const DEFAULT_WIDTH = 420
+
+// View mode presets
+const VIEW_MODES = {
+  compact: { width: 320, label: "Compact", icon: Square },
+  normal: { width: 420, label: "Normal", icon: Columns2 },
+  wide: { width: 560, label: "Wide", icon: RectangleHorizontal },
+} as const
+
+type ViewMode = keyof typeof VIEW_MODES
 
 interface DataContext {
   tables: { path: string; columns: { name: string; type: string }[] }[]
@@ -168,12 +186,51 @@ export function ChatSidebar({
   const [isCredentialsLoading, setIsCredentialsLoading] = useState(true)
   const [input, setInput] = useState("")
   const [contextExpanded, setContextExpanded] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_WIDTH)
+  const [isResizing, setIsResizing] = useState(false)
+  
+  // Determine current view mode based on width
+  const currentViewMode = useMemo((): ViewMode | null => {
+    if (sidebarWidth === VIEW_MODES.compact.width) return "compact"
+    if (sidebarWidth === VIEW_MODES.normal.width) return "normal"
+    if (sidebarWidth === VIEW_MODES.wide.width) return "wide"
+    return null // Custom width
+  }, [sidebarWidth])
+  
+  const setViewMode = useCallback((mode: ViewMode) => {
+    setSidebarWidth(VIEW_MODES[mode].width)
+  }, [])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const sidebarRef = useRef<HTMLDivElement>(null)
   
   // Refs to hold latest values - these are read at send-time to ensure freshness
   const credentialsRef = useRef<OpenAICredentials | null>(null)
   const dataContextRef = useRef<DataContext | undefined>(undefined)
+
+  // Handle resize drag
+  const handleResizeStart = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setIsResizing(true)
+    
+    const startX = e.clientX
+    const startWidth = sidebarWidth
+    
+    const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
+      const deltaX = startX - moveEvent.clientX
+      const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth + deltaX))
+      setSidebarWidth(newWidth)
+    }
+    
+    const handlePointerUp = () => {
+      setIsResizing(false)
+      document.removeEventListener("pointermove", handlePointerMove)
+      document.removeEventListener("pointerup", handlePointerUp)
+    }
+    
+    document.addEventListener("pointermove", handlePointerMove)
+    document.addEventListener("pointerup", handlePointerUp)
+  }, [sidebarWidth])
 
   // Load credentials on mount and listen for changes
   useEffect(() => {
@@ -423,7 +480,33 @@ export function ChatSidebar({
   }
 
   return (
-    <div className="h-full w-[420px] border-l border-border/50 bg-card/50 flex flex-col shrink-0 overflow-hidden">
+    <div 
+      ref={sidebarRef}
+      style={{ width: sidebarWidth }}
+      className={cn(
+        "h-full border-l border-border/50 bg-card/50 flex flex-col shrink-0 overflow-hidden relative",
+        isResizing && "select-none"
+      )}
+    >
+      {/* Resize Handle */}
+      <div
+        onPointerDown={handleResizeStart}
+        className={cn(
+          "absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize z-10 group",
+          "hover:bg-primary/30 active:bg-primary/50 transition-colors",
+          isResizing && "bg-primary/50"
+        )}
+      >
+        <div className={cn(
+          "absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2",
+          "w-4 h-8 flex items-center justify-center",
+          "opacity-0 group-hover:opacity-100 transition-opacity",
+          isResizing && "opacity-100"
+        )}>
+          <GripVertical className="h-4 w-4 text-muted-foreground" />
+        </div>
+      </div>
+
       {/* Header */}
       <div className="h-12 border-b border-border/50 flex items-center px-3 gap-2 shrink-0 bg-card/30">
         <Button
@@ -439,6 +522,29 @@ export function ChatSidebar({
         <div className="flex items-center gap-2 flex-1 min-w-0">
           <Sparkles className="h-4 w-4 text-primary shrink-0" />
           <span className="text-sm font-medium truncate">SQL Assistant</span>
+        </div>
+
+        {/* View Mode Toggles */}
+        <div className="flex items-center gap-0.5 bg-accent/30 rounded-md p-0.5">
+          {(Object.entries(VIEW_MODES) as [ViewMode, typeof VIEW_MODES[ViewMode]][]).map(([mode, config]) => {
+            const Icon = config.icon
+            const isActive = currentViewMode === mode
+            return (
+              <button
+                key={mode}
+                onClick={() => setViewMode(mode)}
+                className={cn(
+                  "p-1 rounded transition-colors",
+                  isActive 
+                    ? "bg-background text-foreground shadow-sm" 
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                )}
+                title={`${config.label} view (${config.width}px)`}
+              >
+                <Icon className="h-3.5 w-3.5" />
+              </button>
+            )
+          })}
         </div>
 
         {messages.length > 0 && (
