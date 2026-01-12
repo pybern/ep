@@ -57,6 +57,8 @@ interface DremioCatalogProps {
   selectedItems?: SelectedCatalogItem[]
   /** Callback when selection changes */
   onSelectionChange?: (items: SelectedCatalogItem[]) => void
+  /** Optional view mode controls to render in header */
+  viewModeControls?: React.ReactNode
 }
 
 /**
@@ -448,6 +450,7 @@ export function DremioCatalog({
   selectionEnabled = false,
   selectedItems = [],
   onSelectionChange,
+  viewModeControls,
 }: DremioCatalogProps) {
   const [catalog, setCatalog] = useState<CatalogItem[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -946,16 +949,17 @@ export function DremioCatalog({
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-border/50 shrink-0">
-        <div className="flex items-center gap-2 text-sm font-medium">
-          <Database className="h-4 w-4 text-primary" />
-          <span>Catalog</span>
+        <div className="flex items-center gap-2 text-sm font-medium min-w-0">
+          <Database className="h-4 w-4 text-primary shrink-0" />
+          <span className="shrink-0">Catalog</span>
           {selectionEnabled && selectedCount > 0 && (
-            <span className="text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-full">
-              {selectedCount} selected
+            <span className="text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-full shrink-0">
+              {selectedCount}
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
+          {viewModeControls}
           {selectionEnabled && selectedCount > 0 && (
             <Button
               variant="ghost"
