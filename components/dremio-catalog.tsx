@@ -1086,9 +1086,8 @@ export function DremioCatalog({
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-border/50 shrink-0">
-        <div className="flex items-center gap-2 text-sm font-medium min-w-0">
+        <div className="flex items-center gap-1.5 text-sm font-medium min-w-0">
           <Database className="h-4 w-4 text-primary shrink-0" />
-          <span className="shrink-0">Catalog</span>
           {selectionEnabled && selectedCount > 0 && (
             <span className="text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-full shrink-0">
               {selectedCount}
