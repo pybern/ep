@@ -353,48 +353,48 @@ export function ChatSidebar({
       
       // When "All" is selected (no workspace), use selected catalog items without notes
       console.log(`[ChatSidebar] Building data context from ${selectedCatalogItems.length} selected items (no workspace)...`)
-      
-      if (selectedCatalogItems.length === 0) {
-        console.log("[ChatSidebar] ⚠ No catalog items selected - dataContext is undefined")
+    
+    if (selectedCatalogItems.length === 0) {
+      console.log("[ChatSidebar] ⚠ No catalog items selected - dataContext is undefined")
         setDataContext(undefined)
         return
-      }
+    }
 
       const tables: TableWithNotes[] = []
       const containers: ContainerWithNotes[] = []
 
-      for (const item of selectedCatalogItems) {
-        if (item.type === "DATASET") {
-          tables.push({
-            path: item.path,
+    for (const item of selectedCatalogItems) {
+      if (item.type === "DATASET") {
+        tables.push({
+          path: item.path,
             columns: item.columns.map(col => ({ 
               name: col.name, 
               type: col.type,
             })),
-          })
-        } else if (item.type === "CONTAINER") {
-          containers.push({
-            path: item.path,
-            type: item.containerType || "CONTAINER",
-            childDatasets: (item.childDatasets || []).map(ds => ({
-              path: ds.path,
+        })
+      } else if (item.type === "CONTAINER") {
+        containers.push({
+          path: item.path,
+          type: item.containerType || "CONTAINER",
+          childDatasets: (item.childDatasets || []).map(ds => ({
+            path: ds.path,
               columns: ds.columns.map(col => ({ 
                 name: col.name, 
                 type: col.type,
               })),
-            }))
-          })
-        }
+          }))
+        })
       }
+    }
 
-      const totalCols = tables.reduce((sum, t) => sum + t.columns.length, 0) +
-        containers.reduce((sum, c) => sum + c.childDatasets.reduce((s, d) => s + d.columns.length, 0), 0)
-      
+    const totalCols = tables.reduce((sum, t) => sum + t.columns.length, 0) +
+      containers.reduce((sum, c) => sum + c.childDatasets.reduce((s, d) => s + d.columns.length, 0), 0)
+    
       console.log(`[ChatSidebar] ✓ Data context built (no workspace):`)
       console.log(`[ChatSidebar]   - Tables: ${tables.length}`)
       console.log(`[ChatSidebar]   - Containers: ${containers.length}`)
-      console.log(`[ChatSidebar]   - Total columns: ${totalCols}`)
-      
+    console.log(`[ChatSidebar]   - Total columns: ${totalCols}`)
+    
       setDataContext({ 
         tables, 
         containers,

@@ -14,9 +14,17 @@ export interface OpenAICredentials {
   sslVerify?: boolean
 }
 
+export interface ADFSCredentials {
+  serverUrl: string      // e.g., "https://adfs-server"
+  clientId: string
+  clientSecret: string
+  redirectUri: string    // e.g., "http://localhost:3000/sso"
+}
+
 export interface StoredCredentials {
   dremio?: DremioCredentials
   openai?: OpenAICredentials
+  adfs?: ADFSCredentials
   lastUpdated?: string
 }
 
@@ -99,5 +107,24 @@ export function getOpenAICredentials(): OpenAICredentials | null {
 export function clearOpenAICredentials(): void {
   const stored = getStoredCredentials()
   delete stored.openai
+  saveCredentials(stored)
+}
+
+export function saveADFSCredentials(credentials: ADFSCredentials): void {
+  const stored = getStoredCredentials()
+  saveCredentials({
+    ...stored,
+    adfs: credentials
+  })
+}
+
+export function getADFSCredentials(): ADFSCredentials | null {
+  const stored = getStoredCredentials()
+  return stored.adfs || null
+}
+
+export function clearADFSCredentials(): void {
+  const stored = getStoredCredentials()
+  delete stored.adfs
   saveCredentials(stored)
 }
