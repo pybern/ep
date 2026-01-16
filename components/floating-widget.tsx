@@ -7,10 +7,11 @@ import { ApiTester } from "@/components/testers/api-tester"
 import { JdbcTester } from "@/components/testers/jdbc-tester"
 import { OdbcTester } from "@/components/testers/odbc-tester"
 import { OpenAiTester } from "@/components/testers/openai-tester"
+import { AdfsTester } from "@/components/testers/adfs-tester"
 import { TestHistory } from "@/components/test-history"
 import { CredentialSettings } from "@/components/credential-settings"
 import { OpenAICredentialSettings } from "@/components/openai-credential-settings"
-import { Shield, Zap, Globe, Database, Server, Sparkles, X, ChevronDown, ChevronUp, Settings } from "lucide-react"
+import { Shield, Zap, Globe, Database, Server, Sparkles, X, ChevronDown, ChevronUp, Settings, KeyRound } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { DremioCredentials } from "@/lib/credential-store"
 
@@ -295,6 +296,13 @@ export function FloatingWidget({ defaultOpen = false, onCredentialsChange, openS
                     <Sparkles className="h-3 w-3" />
                     OpenAI
                   </TabsTrigger>
+                  <TabsTrigger
+                    value="adfs"
+                    className="text-xs data-[state=active]:bg-accent/80 data-[state=active]:text-accent-foreground gap-1.5 px-2.5 h-7"
+                  >
+                    <KeyRound className="h-3 w-3" />
+                    ADFS
+                  </TabsTrigger>
                 </TabsList>
               </div>
 
@@ -315,6 +323,9 @@ export function FloatingWidget({ defaultOpen = false, onCredentialsChange, openS
                   </TabsContent>
                   <TabsContent value="openai" className="mt-0">
                     <OpenAiTester onResult={addResult} />
+                  </TabsContent>
+                  <TabsContent value="adfs" className="mt-0">
+                    <AdfsTester onResult={addResult} />
                   </TabsContent>
                 </div>
               </div>
