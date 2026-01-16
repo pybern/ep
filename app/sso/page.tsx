@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, Suspense } from "react"
 import { useSearchParams } from "next/navigation"
 import { getADFSCredentials, ADFSCredentials } from "@/lib/credential-store"
 import { Button } from "@/components/ui/button"
@@ -54,7 +54,7 @@ function formatTimestamp(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleString()
 }
 
-export default function SSOPage() {
+function SSOContent() {
   const searchParams = useSearchParams()
   const [status, setStatus] = useState<"loading" | "exchanging" | "success" | "error" | "no-code" | "no-credentials">("loading")
   const [tokenResponse, setTokenResponse] = useState<TokenResponse | null>(null)
@@ -278,39 +278,37 @@ export default function SSOPage() {
                   </h3>
                   
                   <div className="p-4 rounded-lg bg-accent/30 border space-y-3">
-                    {/* Common claims */}
-                    {decodedToken.payload.sub && (
+                    {"sub" in decodedToken.payload && decodedToken.payload.sub != null && (
                       <div>
                         <span className="text-xs text-muted-foreground">Subject (sub):</span>
                         <p className="font-mono text-sm">{String(decodedToken.payload.sub)}</p>
                       </div>
                     )}
-                    {decodedToken.payload.upn && (
+                    {"upn" in decodedToken.payload && decodedToken.payload.upn != null && (
                       <div>
                         <span className="text-xs text-muted-foreground">UPN:</span>
                         <p className="font-mono text-sm">{String(decodedToken.payload.upn)}</p>
                       </div>
                     )}
-                    {decodedToken.payload.unique_name && (
+                    {"unique_name" in decodedToken.payload && decodedToken.payload.unique_name != null && (
                       <div>
                         <span className="text-xs text-muted-foreground">Unique Name:</span>
                         <p className="font-mono text-sm">{String(decodedToken.payload.unique_name)}</p>
                       </div>
                     )}
-                    {decodedToken.payload.iat && (
+                    {"iat" in decodedToken.payload && typeof decodedToken.payload.iat === "number" && (
                       <div>
                         <span className="text-xs text-muted-foreground">Issued At:</span>
-                        <p className="font-mono text-sm">{formatTimestamp(Number(decodedToken.payload.iat))}</p>
+                        <p className="font-mono text-sm">{formatTimestamp(decodedToken.payload.iat)}</p>
                       </div>
                     )}
-                    {decodedToken.payload.exp && (
+                    {"exp" in decodedToken.payload && typeof decodedToken.payload.exp === "number" && (
                       <div>
                         <span className="text-xs text-muted-foreground">Expires:</span>
-                        <p className="font-mono text-sm">{formatTimestamp(Number(decodedToken.payload.exp))}</p>
+                        <p className="font-mono text-sm">{formatTimestamp(decodedToken.payload.exp)}</p>
                       </div>
                     )}
                     
-                    {/* Full payload */}
                     <details className="mt-4">
                       <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
                         View full payload
@@ -391,5 +389,34 @@ export default function SSOPage() {
         </div>
       </main>
     </div>
+  )
+}
+
+function SSOLoading() {
+  return (
+    <div className="min-h-screen bg-background flex flex-col">
+      <header className="border-b bg-card/50 backdrop-blur-sm">
+        <div className="container mx-auto px-4 h-14 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Shield className="h-5 w-5 text-primary" />
+            <span className="font-semibold">ADFS SSO Callback</span>
+          </div>
+        </div>
+      </header>
+      <main className="flex-1 container mx-auto px-4 py-8 max-w-3xl flex items-center justify-center">
+        <div className="flex items-center gap-3 text-muted-foreground">
+          <Loader2 className="h-6 w-6 animate-spin" />
+          <span>Loading...</span>
+        </div>
+      </main>
+    </div>
+  )
+}
+
+export default function SSOPage() {
+  return (
+    <Suspense fallback={<SSOLoading />}>
+      <SSOContent />
+    </Suspense>
   )
 }
