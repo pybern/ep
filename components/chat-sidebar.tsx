@@ -457,6 +457,7 @@ export function ChatSidebar({
           apiKey: currentCreds?.apiKey,
           model: currentCreds?.model,
           skipSslVerify: currentCreds?.sslVerify === false,
+          systemPrompt: currentCreds?.systemPrompt,
           dataContext: currentContext,
         }
       },

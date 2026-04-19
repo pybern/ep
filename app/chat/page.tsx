@@ -57,7 +57,9 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { Spinner } from "@/components/ui/spinner"
+import { ModelSelector } from "@/components/model-selector"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -126,6 +128,7 @@ function SettingsPanel({
   const [baseUrl, setBaseUrl] = useState(credentials?.baseUrl || "")
   const [apiKey, setApiKey] = useState(credentials?.apiKey || "")
   const [model, setModel] = useState(credentials?.model || "")
+  const [systemPrompt, setSystemPrompt] = useState(credentials?.systemPrompt || "")
   const [sslVerify, setSslVerify] = useState(credentials?.sslVerify !== false)
   const [urlMode, setUrlMode] = useState<"base" | "endpoint">(credentials?.urlMode || "base")
   const [isTesting, setIsTesting] = useState(false)
@@ -138,6 +141,7 @@ function SettingsPanel({
       model: model.trim(),
       sslVerify,
       urlMode,
+      systemPrompt: systemPrompt.trim() || undefined,
     }
     saveOpenAICredentials(creds)
     onSave(creds)
@@ -249,7 +253,37 @@ function SettingsPanel({
           </div>
           <div className="space-y-2">
             <Label htmlFor="settings-model" className="text-sm">Model</Label>
-            <Input id="settings-model" placeholder="gpt-4o" value={model} onChange={(e) => setModel(e.target.value)} />
+            <ModelSelector
+              id="settings-model"
+              value={model}
+              onChange={setModel}
+              baseUrl={baseUrl}
+              apiKey={apiKey}
+              urlMode={urlMode}
+              skipSslVerify={!sslVerify}
+              suggestions={["gpt-4o-mini", "gpt-4o", "o4-mini", "claude-3-5-sonnet-latest"]}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Pick from the provider catalogue or type a custom id.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="settings-system" className="text-sm flex items-center gap-2">
+              System Instructions
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-normal">
+                optional
+              </span>
+            </Label>
+            <Textarea
+              id="settings-system"
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+              placeholder="Empty = use built-in default. Example: You are a concise SQL analyst..."
+              className="font-mono text-xs min-h-[90px]"
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Prepended to every message sent from this chat.
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <input type="checkbox" id="settings-ssl" checked={!sslVerify} onChange={(e) => setSslVerify(!e.target.checked)} className="rounded border-border" />
@@ -513,6 +547,7 @@ export default function ChatPage() {
         model: credentialsRef.current?.model,
         skipSslVerify: credentialsRef.current?.sslVerify === false,
         urlMode: credentialsRef.current?.urlMode || "base",
+        systemPrompt: credentialsRef.current?.systemPrompt,
       }),
     })
   }, [])

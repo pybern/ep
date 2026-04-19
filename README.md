@@ -9,6 +9,8 @@ A comprehensive tool for testing API endpoints and OpenAI-compatible APIs with s
 All credentials are configured through a dedicated **`/settings`** page — the canonical entry point for the user journey.
 
 - **Guided setup** — three stacked step cards (Dremio → AI provider → Postgres + Embeddings). Each card shows status, hosts the form + inline **Test** + **Save**, and reveals a **Next** button once green.
+- **Model selector** — the AI provider step ships a combobox that auto-fetches the provider's `/v1/models` catalogue (via `/api/openai/test`), shows suggested defaults, and still accepts free-form model ids for gateways that don't expose a catalogue. The list is cached per (baseUrl + urlMode + key-prefix) so switching providers invalidates it automatically.
+- **System instructions** — an optional textarea lets users override the built-in SQL-assistant system prompt. Presets are provided (Concise data analyst, Teaching mode, Read-only safety); leaving it empty falls back to the default. The prompt is persisted in `localStorage` alongside the rest of the AI credentials and forwarded to every chat request (`/api/chat`, `/api/chatbot`). Data-context schema is still appended automatically.
 - **Deep links** — open specific sections with `/settings?tab=setup&focus=dremio|ai|postgres`. The workbench header, catalog empty-state, chat sidebar, and knowledge page all link here.
 - **Advanced testers** — a second tab exposes the raw API / JDBC / ODBC / OpenAI / ADFS / Postgres connection testers (plus the rolling test history) for ad-hoc probing.
 - **Progress bar** — a top-level status card shows how many integrations are configured and which one is next.
