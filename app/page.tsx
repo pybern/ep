@@ -7,7 +7,7 @@ import { DremioCatalog, SelectedCatalogItem } from "@/components/dremio-catalog"
 import { ChatSidebar } from "@/components/chat-sidebar"
 import { useRouter } from "next/navigation"
 import { DremioCredentials, getDremioCredentials } from "@/lib/credential-store"
-import { Database, PanelLeftClose, PanelLeft, MessageSquare, GripVertical, Square, Columns2, RectangleHorizontal, FolderOpen, Sparkles } from "lucide-react"
+import { Database, PanelLeftClose, PanelLeft, MessageSquare, GripVertical, Square, Columns2, RectangleHorizontal, FolderOpen, Sparkles, BookOpen } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/ui/theme-toggle"
 import { cn } from "@/lib/utils"
@@ -231,6 +231,16 @@ export default function Page() {
           >
             <FolderOpen className="h-3 w-3" />
             Workspaces
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs gap-1.5"
+            onClick={() => router.push("/knowledge")}
+          >
+            <BookOpen className="h-3 w-3" />
+            Knowledge
           </Button>
 
           <div className="h-4 w-px bg-border/50" />
