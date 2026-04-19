@@ -4,25 +4,55 @@ import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { 
-  OpenAICredentials, 
-  getOpenAICredentials, 
-  saveOpenAICredentials, 
-  clearOpenAICredentials 
+import { Textarea } from "@/components/ui/textarea"
+import { ModelSelector } from "@/components/model-selector"
+import {
+  OpenAICredentials,
+  getOpenAICredentials,
+  saveOpenAICredentials,
+  clearOpenAICredentials
 } from "@/lib/credential-store"
-import { 
-  Sparkles, 
-  Save, 
-  Trash2, 
-  Eye, 
-  EyeOff, 
-  CheckCircle2, 
+import {
+  Sparkles,
+  Save,
+  Trash2,
+  Eye,
+  EyeOff,
+  CheckCircle2,
   AlertCircle,
   Shield,
-  ShieldOff
+  ShieldOff,
+  Bot,
+  Info,
+  RotateCcw,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Spinner } from "@/components/ui/spinner"
+
+const DEFAULT_SYSTEM_PROMPT_HINT =
+  "You are an expert SQL assistant specialized in helping users discover data and build queries for Dremio..."
+
+const SYSTEM_PROMPT_PRESETS: { label: string; value: string }[] = [
+  {
+    label: "SQL assistant (default)",
+    value: "",
+  },
+  {
+    label: "Concise data analyst",
+    value:
+      "You are a concise, pragmatic data analyst. Always respond with the smallest correct SQL query first, then explain briefly. Prefer CTEs over nested subqueries. Never invent columns that aren't in the provided schema.",
+  },
+  {
+    label: "Teaching mode",
+    value:
+      "You are a patient SQL tutor. For every query you produce, annotate each clause with a one-line comment explaining why it's there. Point out common pitfalls (e.g. implicit joins, untyped casts, timezone drift).",
+  },
+  {
+    label: "Read-only safety",
+    value:
+      "You are a strictly read-only SQL assistant. Refuse to generate any statement that is not a SELECT or WITH ... SELECT. If asked for DDL / DML, respond with a short explanation and suggest the correct administrative workflow instead.",
+  },
+]
 
 interface OpenAICredentialSettingsProps {
   onCredentialsChange?: (credentials: OpenAICredentials | null) => void
@@ -32,6 +62,7 @@ export function OpenAICredentialSettings({ onCredentialsChange }: OpenAICredenti
   const [baseUrl, setBaseUrl] = useState("")
   const [apiKey, setApiKey] = useState("")
   const [model, setModel] = useState("")
+  const [systemPrompt, setSystemPrompt] = useState("")
   const [sslVerify, setSslVerify] = useState(true)
   const [urlMode, setUrlMode] = useState<"base" | "endpoint">("base")
   const [showApiKey, setShowApiKey] = useState(false)
@@ -47,6 +78,7 @@ export function OpenAICredentialSettings({ onCredentialsChange }: OpenAICredenti
       setBaseUrl(stored.baseUrl)
       setApiKey(stored.apiKey)
       setModel(stored.model)
+      setSystemPrompt(stored.systemPrompt ?? "")
       setSslVerify(stored.sslVerify !== false) // Default to true if not set
       setUrlMode(stored.urlMode || "base")
       setHasStoredCredentials(true)
@@ -63,12 +95,13 @@ export function OpenAICredentialSettings({ onCredentialsChange }: OpenAICredenti
       model: model.trim(),
       sslVerify,
       urlMode,
+      systemPrompt: systemPrompt.trim() || undefined,
     }
-    
+
     saveOpenAICredentials(credentials)
     setHasStoredCredentials(true)
     onCredentialsChange?.(credentials)
-    
+
     setTimeout(() => {
       setIsSaving(false)
       setTestResult({ success: true, message: "Credentials saved successfully" })
@@ -81,6 +114,7 @@ export function OpenAICredentialSettings({ onCredentialsChange }: OpenAICredenti
     setBaseUrl("")
     setApiKey("")
     setModel("")
+    setSystemPrompt("")
     setHasStoredCredentials(false)
     setTestResult(null)
     onCredentialsChange?.(null)
@@ -232,19 +266,90 @@ export function OpenAICredentialSettings({ onCredentialsChange }: OpenAICredenti
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="openai-model" className="text-sm">
+          <Label htmlFor="openai-model" className="text-sm flex items-center gap-2">
+            <Bot className="h-3.5 w-3.5 text-primary" />
             Default Model
           </Label>
-          <Input
+          <ModelSelector
             id="openai-model"
-            placeholder="e.g., Llama-3.3-70B-Instruct-AWQ, gpt-4, etc."
             value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="bg-input font-mono text-sm"
+            onChange={setModel}
+            baseUrl={baseUrl}
+            apiKey={apiKey}
+            urlMode={urlMode}
+            skipSslVerify={!sslVerify}
+            placeholder="Pick from provider or type a model id..."
+            suggestions={[
+              "gpt-4o-mini",
+              "gpt-4o",
+              "o4-mini",
+              "claude-3-5-sonnet-latest",
+              "Llama-3.3-70B-Instruct-AWQ",
+            ]}
           />
           <p className="text-[10px] text-muted-foreground">
-            The model name to use by default
+            Auto-fills from <code>/v1/models</code> when you have a Base URL + API key. You can also type any id
+            manually (useful for gateways / MaaS endpoints that don&apos;t expose the catalogue).
           </p>
+        </div>
+
+        {/* System instructions */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <Label htmlFor="openai-system-prompt" className="text-sm flex items-center gap-2">
+              <Sparkles className="h-3.5 w-3.5 text-primary" />
+              System Instructions
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-normal">
+                optional
+              </span>
+            </Label>
+            {systemPrompt.trim().length > 0 && (
+              <button
+                type="button"
+                onClick={() => setSystemPrompt("")}
+                className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                <RotateCcw className="h-3 w-3" />
+                Reset to default
+              </button>
+            )}
+          </div>
+          <Textarea
+            id="openai-system-prompt"
+            value={systemPrompt}
+            onChange={(e) => setSystemPrompt(e.target.value)}
+            placeholder={`Empty = use the built-in default:\n${DEFAULT_SYSTEM_PROMPT_HINT}`}
+            className="bg-input font-mono text-xs min-h-[120px]"
+          />
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[10px] text-muted-foreground flex items-center gap-1.5">
+              <Info className="h-3 w-3" />
+              Prepended to every request. Schema context from your catalog selection is appended automatically.
+            </p>
+            <span className="text-[10px] text-muted-foreground shrink-0">
+              {systemPrompt.length.toLocaleString()} chars
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {SYSTEM_PROMPT_PRESETS.map((p) => {
+              const active = (systemPrompt.trim() || "") === p.value.trim()
+              return (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => setSystemPrompt(p.value)}
+                  className={cn(
+                    "text-[10px] px-2 py-0.5 rounded-md border transition-colors",
+                    active
+                      ? "bg-primary/15 border-primary/40 text-primary"
+                      : "bg-accent/40 border-border/50 text-muted-foreground hover:bg-accent hover:text-foreground",
+                  )}
+                >
+                  {p.label}
+                </button>
+              )
+            })}
+          </div>
         </div>
 
         {/* SSL Verification Toggle */}

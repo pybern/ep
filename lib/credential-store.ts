@@ -13,6 +13,12 @@ export interface OpenAICredentials {
   model: string
   sslVerify?: boolean
   urlMode?: "base" | "endpoint"
+  /**
+   * Optional system instructions prepended to every LLM request (chat,
+   * sidebar assistant, focus, knowledge answers). Empty string / undefined
+   * means "use the built-in default system prompt for the caller".
+   */
+  systemPrompt?: string
 }
 
 export interface ADFSCredentials {
