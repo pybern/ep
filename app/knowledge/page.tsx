@@ -21,6 +21,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Settings,
+  ArrowRight,
 } from "lucide-react"
 import { FloatingWidget } from "@/components/floating-widget"
 import {
@@ -292,33 +293,49 @@ export default function KnowledgePage() {
           <Zap className="h-3 w-3" />
           <span>embed: {openai ? openai.model : <span className="text-warning">not configured</span>}</span>
         </div>
+        <Link
+          href="/settings?tab=setup&focus=postgres"
+          className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-md border border-border/60 hover:bg-accent/40 transition-colors"
+        >
+          <Settings className="h-3.5 w-3.5" />
+          Settings
+        </Link>
         <ThemeToggle />
       </header>
 
       <div className="container mx-auto max-w-6xl px-4 py-6 space-y-6">
         {disabledReason && (
-          <div className="flex items-start gap-2 p-3 rounded-lg bg-warning/10 border border-warning/30 text-warning">
+          <div className="flex items-start gap-3 p-3 rounded-lg bg-warning/10 border border-warning/30 text-warning">
             <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-            <div className="text-xs">
+            <div className="text-xs flex-1">
               <p className="font-medium">Setup required</p>
               <p>{disabledReason}</p>
-              <p className="mt-1 text-[10px] opacity-80 flex items-center gap-1">
-                <Settings className="h-3 w-3" /> Open the floating ⚡ widget → Credentials tab.
-              </p>
             </div>
+            <Link
+              href={`/settings?tab=setup&focus=${!pg ? "postgres" : "ai"}`}
+              className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-md border border-warning/40 bg-warning/10 hover:bg-warning/20 transition-colors shrink-0"
+            >
+              Open Settings <ArrowRight className="h-3 w-3" />
+            </Link>
           </div>
         )}
 
         {setupRequired && pg && (
-          <div className="flex items-start gap-2 p-3 rounded-lg bg-primary/10 border border-primary/30">
+          <div className="flex items-start gap-3 p-3 rounded-lg bg-primary/10 border border-primary/30">
             <Sparkles className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
-            <div className="text-xs">
+            <div className="text-xs flex-1">
               <p className="font-medium text-foreground">The knowledge schema hasn&apos;t been provisioned yet.</p>
               <p className="text-muted-foreground">
-                Open the floating widget → Credentials tab → Postgres section and click <b>Enable Embeddings</b> to
-                create pgvector extensions, <code>kb_documents</code>, <code>kb_chunks</code> and indexes.
+                In <b>Settings → Postgres + Embeddings</b>, click <b>Enable Embeddings</b> to create pgvector
+                extensions, <code>kb_documents</code>, <code>kb_chunks</code> and the indexes.
               </p>
             </div>
+            <Link
+              href="/settings?tab=setup&focus=postgres"
+              className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-md border border-primary/40 bg-primary/10 hover:bg-primary/20 transition-colors shrink-0"
+            >
+              Open Settings <ArrowRight className="h-3 w-3" />
+            </Link>
           </div>
         )}
 

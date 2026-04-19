@@ -2,7 +2,19 @@
 
 A comprehensive tool for testing API endpoints and OpenAI-compatible APIs with support for both client-side and server-side request modes. Now includes a first-class **Postgres connection tester** and a full **knowledge-retrieval pipeline** built on top of `pgvector` + Postgres FTS.
 
-> Looking for the new pieces? Jump to [Postgres Integration](#postgres-integration) and [Knowledge Retrieval](#knowledge-retrieval-rag-with-pgvector).
+> Looking for the new pieces? Jump to [Configuration (/settings)](#configuration-settings), [Postgres Integration](#postgres-integration), or [Knowledge Retrieval](#knowledge-retrieval-rag-with-pgvector).
+
+## Configuration (`/settings`)
+
+All credentials are configured through a dedicated **`/settings`** page — the canonical entry point for the user journey.
+
+- **Guided setup** — three stacked step cards (Dremio → AI provider → Postgres + Embeddings). Each card shows status, hosts the form + inline **Test** + **Save**, and reveals a **Next** button once green.
+- **Deep links** — open specific sections with `/settings?tab=setup&focus=dremio|ai|postgres`. The workbench header, catalog empty-state, chat sidebar, and knowledge page all link here.
+- **Advanced testers** — a second tab exposes the raw API / JDBC / ODBC / OpenAI / ADFS / Postgres connection testers (plus the rolling test history) for ad-hoc probing.
+- **Progress bar** — a top-level status card shows how many integrations are configured and which one is next.
+- **First-run nudge** — when no Dremio credentials are detected on the workbench a pinned "Finish setup" button guides the user straight to the first step.
+
+The floating ⚡ widget remains as a quick-access ad-hoc tester (with a "Settings" link back to the full page), but credential editing has moved into `/settings`.
 
 ## Features
 

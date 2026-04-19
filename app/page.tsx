@@ -1,13 +1,13 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback, useMemo, PointerEvent as ReactPointerEvent } from "react"
+import { useState, useEffect, useCallback, useMemo, PointerEvent as ReactPointerEvent } from "react"
 import { FloatingWidget } from "@/components/floating-widget"
 import { SqlEditor } from "@/components/sql-editor"
 import { DremioCatalog, SelectedCatalogItem } from "@/components/dremio-catalog"
 import { ChatSidebar } from "@/components/chat-sidebar"
 import { useRouter } from "next/navigation"
 import { DremioCredentials, getDremioCredentials } from "@/lib/credential-store"
-import { Database, PanelLeftClose, PanelLeft, MessageSquare, GripVertical, Square, Columns2, RectangleHorizontal, FolderOpen, Sparkles, BookOpen } from "lucide-react"
+import { Database, PanelLeftClose, PanelLeft, MessageSquare, GripVertical, Square, Columns2, RectangleHorizontal, FolderOpen, Sparkles, BookOpen, Settings, ArrowRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/ui/theme-toggle"
 import { cn } from "@/lib/utils"
@@ -35,7 +35,6 @@ export default function Page() {
   const [catalogWidth, setCatalogWidth] = useState(CATALOG_DEFAULT_WIDTH)
   const [isCatalogResizing, setIsCatalogResizing] = useState(false)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null)
-  const openSettingsRef = useRef<(() => void) | null>(null)
 
   // Load credentials on mount
   useEffect(() => {
@@ -84,9 +83,12 @@ export default function Page() {
     setCredentials(creds)
   }, [])
 
-  const handleOpenSettings = useCallback(() => {
-    openSettingsRef.current?.()
-  }, [])
+  const handleOpenSettings = useCallback(
+    (focus?: "dremio" | "ai" | "postgres") => {
+      router.push(focus ? `/settings?tab=setup&focus=${focus}` : "/settings")
+    },
+    [router],
+  )
 
   const handleToggleChatSidebar = useCallback(() => {
     setChatSidebarOpen(prev => !prev)
@@ -133,7 +135,7 @@ export default function Page() {
             <DremioCatalog 
               credentials={credentials} 
               onTableSelect={handleTableSelect}
-              onOpenSettings={handleOpenSettings}
+              onOpenSettings={() => handleOpenSettings("dremio")}
               selectionEnabled={true}
               selectedItems={selectedCatalogItems}
               onSelectionChange={handleSelectionChange}
@@ -246,21 +248,35 @@ export default function Page() {
           <div className="h-4 w-px bg-border/50" />
 
           {credentials ? (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <button
+              onClick={() => handleOpenSettings("dremio")}
+              className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground"
+              title="Manage Dremio credentials"
+            >
               <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
               <span className="truncate max-w-[200px]">{credentials.endpoint}</span>
-            </div>
+            </button>
           ) : (
-            <Button 
-              variant="outline" 
-              size="sm" 
+            <Button
+              variant="outline"
+              size="sm"
               className="h-7 text-xs gap-1.5"
-              onClick={handleOpenSettings}
+              onClick={() => handleOpenSettings("dremio")}
             >
               <Database className="h-3 w-3" />
               Configure Dremio
             </Button>
           )}
+
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => handleOpenSettings()}
+            title="Settings"
+          >
+            <Settings className="h-4 w-4" />
+          </Button>
 
           <Button
             variant="ghost"
@@ -284,21 +300,33 @@ export default function Page() {
         </div>
       </div>
 
+      {/* First-run onboarding nudge */}
+      {!credentials && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <Button
+            onClick={() => handleOpenSettings("dremio")}
+            className="shadow-lg gap-2"
+          >
+            <Sparkles className="h-4 w-4" />
+            Finish setup
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      )}
+
       {/* Chat Sidebar */}
       <ChatSidebar 
         isOpen={chatSidebarOpen}
         onToggle={handleToggleChatSidebar}
-        onOpenSettings={handleOpenSettings}
+        onOpenSettings={() => handleOpenSettings("ai")}
         dremioCredentials={credentials}
         selectedCatalogItems={selectedCatalogItems}
         onWorkspaceChange={setActiveWorkspaceId}
       />
 
-      {/* Floating Widget */}
-      <FloatingWidget 
-        onCredentialsChange={handleCredentialsChange}
-        openSettingsRef={openSettingsRef}
-      />
+      {/* Floating Widget - retained as an ad-hoc ⚡ tester for power users.
+          Credentials management now lives in /settings. */}
+      <FloatingWidget onCredentialsChange={handleCredentialsChange} />
     </main>
   )
 }

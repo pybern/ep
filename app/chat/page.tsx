@@ -1336,7 +1336,7 @@ export default function ChatPage() {
           <SidebarFooter className="p-3 border-t border-border/50">
             <SidebarMenu>
               <SidebarMenuItem>
-                <SidebarMenuButton onClick={() => setShowSettings(true)} className="text-xs">
+                <SidebarMenuButton onClick={() => router.push("/settings?tab=setup&focus=ai")} className="text-xs">
                   <Settings className="h-3.5 w-3.5" />
                   <span>Settings</span>
                   {isConfigured && (
@@ -1345,6 +1345,16 @@ export default function ChatPage() {
                       {credentials?.model}
                     </span>
                   )}
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  onClick={() => setShowSettings(true)}
+                  className="text-xs"
+                  title="Quick edit credentials without leaving the chat"
+                >
+                  <Settings className="h-3.5 w-3.5" />
+                  <span>Quick settings</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
               <SidebarMenuItem>
@@ -1381,10 +1391,15 @@ export default function ChatPage() {
                 <p className="text-muted-foreground mb-6 leading-relaxed">
                   Connect to any OpenAI-compatible API to start chatting. Your credentials are stored locally.
                 </p>
-                <Button size="lg" onClick={() => setShowSettings(true)} className="gap-2">
-                  <Settings className="h-4 w-4" />
-                  Configure API
-                </Button>
+                <div className="flex items-center gap-2 justify-center">
+                  <Button size="lg" onClick={() => router.push("/settings?tab=setup&focus=ai")} className="gap-2">
+                    <Settings className="h-4 w-4" />
+                    Open Settings
+                  </Button>
+                  <Button size="lg" variant="outline" onClick={() => setShowSettings(true)} className="gap-2">
+                    Quick config
+                  </Button>
+                </div>
               </div>
             </div>
           ) : (
