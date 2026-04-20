@@ -199,7 +199,9 @@ npm start
 
 ## Postgres Integration
 
-The **Postgres** tab in the Connection Tester (and the Postgres section inside Credentials) adds a fully-featured alternative to the Dremio catalog view. It is BYO-cloud — paste a connection string for any Postgres-compatible service and the credentials stay in `localStorage`.
+Postgres is a first-class **data source** in the workbench, a peer to Dremio. The header carries a source switcher; picking Postgres replaces the Dremio catalog sidebar with a Postgres schema/table/column browser and routes the SQL editor to `/api/postgres/sql` (plain PostgreSQL with 60 s statement timeout + row cap). Selections from either source flow into the AI chat context the same way; the chat API receives a `dialect` hint so its built-in system prompt says "PostgreSQL" instead of "Dremio" when appropriate.
+
+The **Postgres** tab in the Connection Tester (and the Postgres section inside Settings) adds a fully-featured alternative to the Dremio catalog. It is BYO-cloud — paste a connection string for any Postgres-compatible service and the credentials stay in `localStorage`.
 
 ### Supported providers
 
