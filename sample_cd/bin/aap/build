@@ -88,6 +88,18 @@ if [ -z "${REGISTRY_HOST:-}" ] && [ -n "${IMAGE_REPOSITORY:-}" ]; then
   REGISTRY_HOST="${IMAGE_REPOSITORY%%/*}"
 fi
 
+echo "Registry host resolved: ${REGISTRY_HOST:-<empty>}"
+if [ -n "${REGISTRY_USERNAME:-}" ]; then
+  echo "Registry username resolved from environment."
+else
+  echo "Registry username not found in environment."
+fi
+if [ -n "${REGISTRY_PASSWORD:-}" ]; then
+  echo "Registry password resolved from environment."
+else
+  echo "Registry password not found in environment."
+fi
+
 if [ -n "${REGISTRY_HOST:-}" ] && [ -n "${REGISTRY_USERNAME:-}" ] && [ -n "${REGISTRY_PASSWORD:-}" ] && [ -n "$IMAGE_REPOSITORY" ]; then
   IMAGE_REF="$IMAGE_REPOSITORY:$IMAGE_TAG"
   echo "Building image $IMAGE_REF"

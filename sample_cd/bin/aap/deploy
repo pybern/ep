@@ -14,6 +14,14 @@ fi
 if [ "$deploy_failed" = true ]; then
   NS="$(awk -F'=' '/^[[:space:]]*k8s_namespace[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
   APP_NAME="$(awk -F'=' '/^[[:space:]]*app_name[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
+  K8S_CONFIG_RESOLVED="$(awk -F'=' '/^[[:space:]]*k8s_config[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-runtime.auto.tfvars" 2>/dev/null || true)"
+  if [ -z "$K8S_CONFIG_RESOLVED" ]; then
+    K8S_CONFIG_RESOLVED="$(awk -F'=' '/^[[:space:]]*k8s_config[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-secret.tfvars" 2>/dev/null || true)"
+  fi
+  if [ -n "$K8S_CONFIG_RESOLVED" ]; then
+    export KUBECONFIG="$K8S_CONFIG_RESOLVED"
+    echo "Using KUBECONFIG for diagnostics: $KUBECONFIG"
+  fi
   if [ -n "$NS" ]; then
     echo "=== Kubernetes diagnostics (namespace: $NS) ==="
     kubectl -n "$NS" get deploy,po,svc || true
