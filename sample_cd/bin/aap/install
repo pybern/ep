@@ -1,0 +1,41 @@
+#!/bin/bash
+set -euo pipefail
+
+required_vars=(
+  ENV_NAME
+  GIT_PROJECT_ID
+)
+for v in "${required_vars[@]}"; do
+  if [ -z "${!v:-}" ]; then
+    echo "Missing required environment variable: $v"
+    exit 1
+  fi
+done
+
+GIT_USERNAME_EFFECTIVE="${GIT_USERNAME:-${GIT_USER:-}}"
+GIT_PASSWORD_EFFECTIVE="${GIT_PASSWORD:-${GIT_ACCESS_TOKEN:-${GIT_TOKEN:-}}}"
+
+if [ -z "${GIT_USERNAME_EFFECTIVE:-}" ]; then
+  echo "Missing Git username. Set GIT_USERNAME or GIT_USER."
+  exit 1
+fi
+
+if [ -z "${GIT_PASSWORD_EFFECTIVE:-}" ]; then
+  echo "Missing Git token/password. Set GIT_PASSWORD or GIT_ACCESS_TOKEN or GIT_TOKEN."
+  exit 1
+fi
+
+TERRAFORM_BACKEND_CONFIG_PATH=./terraform-backend-config
+: > "$TERRAFORM_BACKEND_CONFIG_PATH"
+echo -e "address=\"https://gitlab.intra.hkma.gov.hk/api/v4/projects/$GIT_PROJECT_ID/terraform/state/$ENV_NAME\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
+echo -e "lock_address=\"https://gitlab.intra.hkma.gov.hk/api/v4/projects/$GIT_PROJECT_ID/terraform/state/$ENV_NAME/lock\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
+echo -e "unlock_address=\"https://gitlab.intra.hkma.gov.hk/api/v4/projects/$GIT_PROJECT_ID/terraform/state/$ENV_NAME/lock\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
+echo -e "username=\"$GIT_USERNAME_EFFECTIVE\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
+echo -e "password=\"$GIT_PASSWORD_EFFECTIVE\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
+echo -e "lock_method=\"POST\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
+echo -e "unlock_method=\"DELETE\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
+echo -e "retry_wait_min=\"5\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
+
+TERRAFORM_ACTION="init -backend-config=$TERRAFORM_BACKEND_CONFIG_PATH -upgrade"
+
+terraform $TERRAFORM_ACTION

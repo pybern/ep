@@ -1,0 +1,88 @@
+deployment:
+  userDefinedVolumes:
+    - name: "timezone-config"
+      hostPath:
+        path: "/etc/localtime"
+  userDefinedVolumeMounts:
+    - name: "timezone-config"
+      mountPath: "/etc/localtime"
+
+ingressController:
+ enabled: false
+
+image:
+ repository: dpsauatdk01.intra.hkma.gov.hk:8443/dockerhub-proxy/kong/kong-gateway
+ tag: "3.9"
+ pullSecrets:
+  - harbor-access
+
+secretVolumes:
+ - kong-cluster-cert
+
+env:
+ role: data_plane
+ database: "off"
+
+ # Tell the data plane how to connect to the control plane
+ cluster_control_plane: kong-cp-kong-cluster.cags.svc.cluster.local:8005
+ cluster_telemetry_endpoint: kong-cp-kong-clustertelemetry.cags.svc.cluster.local:8006
+
+ # Configure control plane / data plane authentication
+ lua_ssl_trusted_certificate: /etc/secrets/kong-cluster-cert/tls.crt
+ cluster_cert: /etc/secrets/kong-cluster-cert/tls.crt
+ cluster_cert_key: /etc/secrets/kong-cluster-cert/tls.key
+
+customEnv:
+ TZ: "Asia/Hong_Kong"
+
+enterprise:
+ enabled: true
+ license_secret: kong-enterprise-license
+
+proxy:
+ enabled: true
+ type: ClusterIP
+ http:
+  enabled: false
+ tls:
+  enabled: true
+ ingress:
+  enabled: true
+  ingressClassName: nginx
+  hostname: "devcags.intra.hkma.gov.hk"
+  tls: ingress-tls
+  annotations:
+   nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+   nginx.ingress.kubernetes.io/ssl-redirect: "true"
+   nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+   nginx.ingress.kubernetes.io/rewrite-target: "/"
+  path: /
+  pathType: ImplementationSpecific
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+ enabled: false
+ minAvailable: "50%"
+
+resources:
+ requests:
+  cpu: 500m
+  memory: 512Mi
+ limits:
+  cpu: 2
+  memory: 4Gi
+  
+# These roles are served by the kong-cp deployment
+admin:
+ enabled: false
+
+manager:
+ enabled: false
+
+portal:
+ enabled: false
+
+portalapi:
+ enabled: false

@@ -1,0 +1,9 @@
+#!/bin/bash
+set -euo pipefail
+
+if [ ! -f tf.plan ]; then
+  echo "Missing tf.plan. Run build step first."
+  exit 1
+fi
+
+terraform apply -auto-approve tf.plan
