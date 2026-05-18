@@ -1,0 +1,213 @@
+# Do not use Kong Ingress Controller
+ingressController:
+ enabled: false
+
+deployment:
+  kong:
+    enabled: true
+  userDefinedVolumes:
+    - name: "timezone-config"
+      hostPath:
+        path: "/etc/localtime"
+  userDefinedVolumeMounts:
+    - name: "timezone-config"
+      mountPath: "/etc/localtime"
+
+image:
+ repository: dpsauatdk01.intra.hkma.gov.hk:8443/dockerhub-proxy/kong/kong-gateway
+ tag: "3.9"
+ pullSecrets:
+  - harbor-access
+
+secretVolumes:
+ - kong-cluster-cert
+
+env:
+ role: control_plane
+ cluster_cert: /etc/secrets/kong-cluster-cert/tls.crt
+ cluster_cert_key: /etc/secrets/kong-cluster-cert/tls.key
+ nginx_worker_processes: "2"
+ log_level: "debug"
+ audit_log: "on"
+ admin_access_log: /dev/stdout
+ admin_gui_access_log: /dev/stdout
+ portal_api_access_log: /dev/stdout
+ admin_error_log: /dev/stderr
+ admin_gui_error_log: /dev/stderr
+ portal_api_error_log: /dev/stderr
+# admin_listen: "0.0.0.0:8001"
+
+ #URL settings
+ admin_api_uri: "https://cags-kongadmin.devdpsak8s.intra.hkma.gov.hk"
+ admin_gui_uri: " https://cags-kongmanager.devdpsak8s.intra.hkma.gov.hk "
+ proxy_url: "https://cags.devdpsak8s.intra.hkma.gov.hk"
+
+ portal_gui_protocol: "https"
+ portal_gui_use_subdomains: false 
+ portal_auth: "basic-auth"
+ portal_session_conf:
+  valueFrom:
+   secretKeyRef:
+    name: kong-session-config
+    key: portal_session_conf
+ portal_cors_origins: "*"
+
+ password:
+  valueFrom:
+   secretKeyRef:
+    name: kong-enterprise-superuser-password
+    key: password
+
+
+ # Database
+ database: postgres
+ pg_database: kong
+ pg_user:
+  valueFrom:
+   secretKeyRef:
+    name: postgres-db-secrets
+    key: user
+ pg_password:
+  valueFrom:
+   secretKeyRef:
+    name: postgres-db-secrets
+    key: password
+ pg_host: cagsdevdboa.intra.hkma.gov.hk
+ pg_ssl: "on"
+
+# Enterprise functionality
+enterprise:
+ enabled: true
+ vitals:
+  enabled: true
+ portal:
+  enabled: true
+ license_secret: kong-enterprise-license
+ rbac:
+  enabled: true
+  admin_gui_auth: ldap-auth-advanced
+  admin_gui_auth_conf_secret: admin-gui-auth-conf
+  session_conf_secret: kong-session-config
+ smtp:
+  enabled: true
+  portal_emails_from: cags_admin_dev@hkma.gov.hk
+  portal_emails_reply_to: cags_admin_dev@hkma.gov.hk
+  admin_emails_from: cags_admin_dev@hkma.gov.hk
+  admin_emails_reply_to: cags_admin_dev@hkma.gov.hk
+  smtp_admin_emails: cags_admin_dev@hkma.gov.hk
+  smtp_host: 172.22.99.101
+  smtp_port: 25
+  smtp_auth_type: ''
+  smtp_ssl: nil
+  smtp_starttls: false
+
+# The control plane serves the Admin API
+admin:
+ enabled: true
+ type: ClusterIP
+ http:
+  enabled: false
+ tls:
+  enabled: true
+ ingress:
+  enabled: true
+  ingressClassName: nginx
+  hostname: "cags-kongadmin.devdpsak8s.intra.hkma.gov.hk"
+  tls: ingress-tls
+  annotations:
+#   konghq.com/protocol: "https"
+   nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+   nginx.ingress.kubernetes.io/ssl-redirect: "true"
+   nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+   nginx.ingress.kubernetes.io/rewrite-target: "/"
+  path: /
+  pathType: Prefix
+
+# Clustering endpoints are required in hybrid mode
+cluster:
+ enabled: true
+ tls:
+   enabled: true
+   servicePort: 8005
+   containerPort: 8005
+
+clustertelemetry:
+ enabled: true
+ tls:
+   enabled: true
+   servicePort: 8006
+   containerPort: 8006
+ secretVolumes:
+  - kong-cluster-cert
+
+# Optional features
+manager:
+ enabled: true
+ type: ClusterIP
+ http:
+  enabled: false
+ tls:
+  enabled: true
+ ingress:
+  enabled: true
+  ingressClassName: nginx
+  hostname: "cags-kongmanager.devdpsak8s.intra.hkma.gov.hk"
+  tls: ingress-tls
+  annotations:
+#   konghq.com/protocol: "https"
+   nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+   nginx.ingress.kubernetes.io/ssl-redirect: "true"
+   nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+   nginx.ingress.kubernetes.io/rewrite-target: "/"
+  path: /
+  pathType: Prefix
+  
+status:
+ enabled: true
+ type: ClusterIP
+ http:
+  enabled: true
+ tls:
+  enabled: true
+
+portal:
+ enabled: false
+
+portalapi:
+ enabled: false
+
+waitImage:
+ repository: dpsauatdk01.intra.hkma.gov.hk:8443/dockerhub-proxy/bash
+ tag: 5.3
+ pullPolicy: IfNotPresent
+
+readinessProbe:
+ httpGet:
+  path: "/status"
+  port: status
+  scheme: HTTP
+ initialDelaySeconds: 5
+ timeoutSeconds: 5
+ periodSeconds: 10
+ successThreshold: 1
+ failureThreshold: 3
+
+livenessProbe:
+ httpGet:
+  path: "/status"
+  port: status
+  scheme: HTTP
+ initialDelaySeconds: 5
+ timeoutSeconds: 5
+ periodSeconds: 10
+ successThreshold: 1
+ failureThreshold: 3
+
+lifecycle:
+ preStop:
+  exec:
+   command: ["/bin/sh", "-c", "/bin/sleep 15 && kong quit"]
+
+# These roles will be served by different Helm releases
+proxy:
+ enabled: false

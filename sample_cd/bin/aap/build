@@ -1,0 +1,89 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CD_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$CD_ROOT/.." && pwd)"
+
+TF_PLAN_RAW_PATH="tf.plan"
+TF_PLAN_JSON_PATH="tf.json"
+TF_RUNTIME_VARS_PATH="vars/$ENV_NAME/terraform-runtime.auto.tfvars"
+
+REGISTRY_HOST="${DOCKER_REGISTRY_HOST:-${HARBOR_HOST:-}}"
+REGISTRY_USERNAME="${DOCKER_REGISTRY_USERNAME:-${HARBOR_USERNAME:-}}"
+REGISTRY_PASSWORD="${DOCKER_REGISTRY_PASSWORD:-${HARBOR_PASSWORD:-}}"
+
+required_vars=(
+  ENV_NAME
+)
+for v in "${required_vars[@]}"; do
+  if [ -z "${!v:-}" ]; then
+    echo "Missing required environment variable: $v"
+    exit 1
+  fi
+done
+
+if [ -n "${ANSIBLE_VAULT_SECRET_PATH:-}" ] && [ -f "vars/$ENV_NAME/terraform-secret.tfvars" ]; then
+  sh "$SCRIPT_DIR/ansible-vault" "decrypt" "vars/$ENV_NAME/terraform-secret.tfvars"
+else
+  echo "Skipping ansible-vault decrypt (ANSIBLE_VAULT_SECRET_PATH not set or secret file missing)."
+fi
+
+if [ -n "${APPLICATION_INFRA_TAG:-}" ]; then
+  IMAGE_TAG="$APPLICATION_INFRA_TAG"
+elif [ -n "${CI_COMMIT_TAG:-}" ]; then
+  IMAGE_TAG="$CI_COMMIT_TAG"
+else
+  IMAGE_TAG="$(git rev-parse --short HEAD)"
+fi
+
+if [ -n "${DOCKER_IMAGE_REPOSITORY:-}" ]; then
+  IMAGE_REPOSITORY="$DOCKER_IMAGE_REPOSITORY"
+elif [ -n "${HARBOR_IMAGE_REPOSITORY:-}" ]; then
+  IMAGE_REPOSITORY="$HARBOR_IMAGE_REPOSITORY"
+elif [ -n "${REGISTRY_HOST:-}" ] && [ -n "${HARBOR_PROJECT:-}" ] && [ -n "${HARBOR_REPOSITORY:-}" ]; then
+  IMAGE_REPOSITORY="${REGISTRY_HOST}/${HARBOR_PROJECT}/${HARBOR_REPOSITORY}"
+else
+  IMAGE_REPOSITORY="$(awk -F'=' '/^[[:space:]]*image_repository[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars")"
+fi
+
+if [ -n "${REGISTRY_HOST:-}" ] && [ -n "${REGISTRY_USERNAME:-}" ] && [ -n "${REGISTRY_PASSWORD:-}" ] && [ -n "$IMAGE_REPOSITORY" ]; then
+  IMAGE_REF="$IMAGE_REPOSITORY:$IMAGE_TAG"
+  echo "Building image $IMAGE_REF"
+  echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" --password-stdin
+  docker build -t "$IMAGE_REF" -f "$REPO_ROOT/Dockerfile" "$REPO_ROOT"
+  docker push "$IMAGE_REF"
+else
+  echo "Skipping docker/harbor build-push (deploy-only mode)."
+fi
+
+: > "$TF_RUNTIME_VARS_PATH"
+echo "env_name=\"$ENV_NAME\"" >> "$TF_RUNTIME_VARS_PATH"
+if [ -n "${K8S_CONFIG_PATH:-}" ]; then
+  echo "k8s_config=\"$K8S_CONFIG_PATH\"" >> "$TF_RUNTIME_VARS_PATH"
+fi
+if [ -n "${IMAGE_REPOSITORY:-}" ]; then
+  echo "image_repository=\"$IMAGE_REPOSITORY\"" >> "$TF_RUNTIME_VARS_PATH"
+fi
+echo "image_tag=\"$IMAGE_TAG\"" >> "$TF_RUNTIME_VARS_PATH"
+if [ -n "${REGISTRY_HOST:-}" ]; then
+  echo "docker_registry_host=\"$REGISTRY_HOST\"" >> "$TF_RUNTIME_VARS_PATH"
+fi
+if [ -n "${REGISTRY_USERNAME:-}" ]; then
+  echo "docker_registry_usr=\"$REGISTRY_USERNAME\"" >> "$TF_RUNTIME_VARS_PATH"
+fi
+if [ -n "${REGISTRY_PASSWORD:-}" ]; then
+  echo "docker_registry_psw=\"$REGISTRY_PASSWORD\"" >> "$TF_RUNTIME_VARS_PATH"
+fi
+
+terraform_args=(
+  "-var-file=vars/$ENV_NAME/terraform-config.tfvars"
+  "-var-file=$TF_RUNTIME_VARS_PATH"
+)
+if [ -f "vars/$ENV_NAME/terraform-secret.tfvars" ]; then
+  terraform_args+=("-var-file=vars/$ENV_NAME/terraform-secret.tfvars")
+fi
+
+terraform plan --out "$TF_PLAN_RAW_PATH" "${terraform_args[@]}"
+terraform show -json "$TF_PLAN_RAW_PATH" > "$TF_PLAN_JSON_PATH"
+terraform graph -plan="$TF_PLAN_RAW_PATH"
