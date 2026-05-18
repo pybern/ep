@@ -51,6 +51,9 @@ Optional:
 - Harbor aliases (equivalent to docker vars in build script):
   - `HARBOR_HOST`, `HARBOR_USERNAME`, `HARBOR_PASSWORD`
   - either `HARBOR_IMAGE_REPOSITORY` or (`HARBOR_PROJECT` + `HARBOR_REPOSITORY`)
+  - Also supported for DevSecOps credential templates: `SOURCE_HARBOR_*` and `TARGET_HARBOR_*` variants (`*_HOST`, `*_USERNAME`, `*_PASSWORD`, `*_PROJECT`, `*_REPOSITORY`, `*_IMAGE_REPOSITORY`)
+  - Also supported: `TARGET_REPOSITORY_USERNAME` / `TARGET_REPOSITORY_PASSWORD` style variables from Target Harbor credential templates.
+  - If host vars are not provided, build script falls back to `docker_registry_host` or parses host from `image_repository` in `terraform-config.tfvars`.
 
 ## Terraform vars layout
 
