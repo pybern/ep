@@ -8,10 +8,12 @@ REPO_ROOT="$(cd "$CD_ROOT/.." && pwd)"
 TF_PLAN_RAW_PATH="tf.plan"
 TF_PLAN_JSON_PATH="tf.json"
 TF_RUNTIME_VARS_PATH="vars/$ENV_NAME/terraform-runtime.auto.tfvars"
+SECRET_TFVARS_PATH="vars/$ENV_NAME/terraform-secret.tfvars"
 
 REGISTRY_HOST="${DOCKER_REGISTRY_HOST:-${HARBOR_HOST:-}}"
 REGISTRY_USERNAME="${DOCKER_REGISTRY_USERNAME:-${HARBOR_USERNAME:-}}"
 REGISTRY_PASSWORD="${DOCKER_REGISTRY_PASSWORD:-${HARBOR_PASSWORD:-}}"
+USE_SECRET_TFVARS=false
 
 required_vars=(
   ENV_NAME
@@ -23,10 +25,23 @@ for v in "${required_vars[@]}"; do
   fi
 done
 
-if [ -n "${ANSIBLE_VAULT_SECRET_PATH:-}" ] && [ -f "vars/$ENV_NAME/terraform-secret.tfvars" ]; then
-  sh "$SCRIPT_DIR/ansible-vault" "decrypt" "vars/$ENV_NAME/terraform-secret.tfvars"
+if [ -f "$SECRET_TFVARS_PATH" ]; then
+  first_line="$(sed -n '1p' "$SECRET_TFVARS_PATH" || true)"
+  if [[ "$first_line" == \$ANSIBLE_VAULT* ]]; then
+    if [ -n "${ANSIBLE_VAULT_SECRET_PATH:-}" ]; then
+      if sh "$SCRIPT_DIR/ansible-vault" "decrypt" "$SECRET_TFVARS_PATH"; then
+        USE_SECRET_TFVARS=true
+      else
+        echo "Vault decrypt failed; continuing without terraform-secret.tfvars."
+      fi
+    else
+      echo "Skipping encrypted terraform-secret.tfvars (ANSIBLE_VAULT_SECRET_PATH not set)."
+    fi
+  else
+    USE_SECRET_TFVARS=true
+  fi
 else
-  echo "Skipping ansible-vault decrypt (ANSIBLE_VAULT_SECRET_PATH not set or secret file missing)."
+  echo "No terraform-secret.tfvars found; continuing without secret tfvars."
 fi
 
 if [ -n "${APPLICATION_INFRA_TAG:-}" ]; then
@@ -80,8 +95,8 @@ terraform_args=(
   "-var-file=vars/$ENV_NAME/terraform-config.tfvars"
   "-var-file=$TF_RUNTIME_VARS_PATH"
 )
-if [ -f "vars/$ENV_NAME/terraform-secret.tfvars" ]; then
-  terraform_args+=("-var-file=vars/$ENV_NAME/terraform-secret.tfvars")
+if [ "$USE_SECRET_TFVARS" = true ]; then
+  terraform_args+=("-var-file=$SECRET_TFVARS_PATH")
 fi
 
 terraform plan --out "$TF_PLAN_RAW_PATH" "${terraform_args[@]}"
