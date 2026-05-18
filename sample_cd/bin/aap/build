@@ -10,9 +10,19 @@ TF_PLAN_JSON_PATH="tf.json"
 TF_RUNTIME_VARS_PATH="vars/$ENV_NAME/terraform-runtime.auto.tfvars"
 SECRET_TFVARS_PATH="vars/$ENV_NAME/terraform-secret.tfvars"
 
-REGISTRY_HOST="${DOCKER_REGISTRY_HOST:-${HARBOR_HOST:-}}"
-REGISTRY_USERNAME="${DOCKER_REGISTRY_USERNAME:-${HARBOR_USERNAME:-}}"
-REGISTRY_PASSWORD="${DOCKER_REGISTRY_PASSWORD:-${HARBOR_PASSWORD:-}}"
+pick_first() {
+  for var_name in "$@"; do
+    if [ -n "${!var_name:-}" ]; then
+      printf '%s' "${!var_name}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+REGISTRY_HOST="$(pick_first DOCKER_REGISTRY_HOST HARBOR_HOST TARGET_HARBOR_HOST SOURCE_HARBOR_HOST HARBOR_REGISTRY_HOST || true)"
+REGISTRY_USERNAME="$(pick_first DOCKER_REGISTRY_USERNAME HARBOR_USERNAME TARGET_HARBOR_USERNAME SOURCE_HARBOR_USERNAME HARBOR_USER HARBOR_ACCOUNT TARGET_REPOSITORY_USERNAME SOURCE_REPOSITORY_USERNAME REPOSITORY_USERNAME || true)"
+REGISTRY_PASSWORD="$(pick_first DOCKER_REGISTRY_PASSWORD HARBOR_PASSWORD TARGET_HARBOR_PASSWORD SOURCE_HARBOR_PASSWORD HARBOR_TOKEN TARGET_HARBOR_TOKEN SOURCE_HARBOR_TOKEN TARGET_REPOSITORY_PASSWORD SOURCE_REPOSITORY_PASSWORD REPOSITORY_PASSWORD || true)"
 USE_SECRET_TFVARS=false
 
 required_vars=(
@@ -56,10 +66,26 @@ if [ -n "${DOCKER_IMAGE_REPOSITORY:-}" ]; then
   IMAGE_REPOSITORY="$DOCKER_IMAGE_REPOSITORY"
 elif [ -n "${HARBOR_IMAGE_REPOSITORY:-}" ]; then
   IMAGE_REPOSITORY="$HARBOR_IMAGE_REPOSITORY"
-elif [ -n "${REGISTRY_HOST:-}" ] && [ -n "${HARBOR_PROJECT:-}" ] && [ -n "${HARBOR_REPOSITORY:-}" ]; then
-  IMAGE_REPOSITORY="${REGISTRY_HOST}/${HARBOR_PROJECT}/${HARBOR_REPOSITORY}"
+elif [ -n "${TARGET_HARBOR_IMAGE_REPOSITORY:-}" ]; then
+  IMAGE_REPOSITORY="$TARGET_HARBOR_IMAGE_REPOSITORY"
+elif [ -n "${SOURCE_HARBOR_IMAGE_REPOSITORY:-}" ]; then
+  IMAGE_REPOSITORY="$SOURCE_HARBOR_IMAGE_REPOSITORY"
+elif [ -n "${REGISTRY_HOST:-}" ]; then
+  HARBOR_PROJECT_EFFECTIVE="$(pick_first HARBOR_PROJECT TARGET_HARBOR_PROJECT SOURCE_HARBOR_PROJECT || true)"
+  HARBOR_REPOSITORY_EFFECTIVE="$(pick_first HARBOR_REPOSITORY TARGET_HARBOR_REPOSITORY SOURCE_HARBOR_REPOSITORY || true)"
+  if [ -n "${HARBOR_PROJECT_EFFECTIVE:-}" ] && [ -n "${HARBOR_REPOSITORY_EFFECTIVE:-}" ]; then
+    IMAGE_REPOSITORY="${REGISTRY_HOST}/${HARBOR_PROJECT_EFFECTIVE}/${HARBOR_REPOSITORY_EFFECTIVE}"
+  fi
 else
   IMAGE_REPOSITORY="$(awk -F'=' '/^[[:space:]]*image_repository[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars")"
+fi
+
+if [ -z "${REGISTRY_HOST:-}" ]; then
+  REGISTRY_HOST="$(awk -F'=' '/^[[:space:]]*docker_registry_host[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
+fi
+
+if [ -z "${REGISTRY_HOST:-}" ] && [ -n "${IMAGE_REPOSITORY:-}" ]; then
+  REGISTRY_HOST="${IMAGE_REPOSITORY%%/*}"
 fi
 
 if [ -n "${REGISTRY_HOST:-}" ] && [ -n "${REGISTRY_USERNAME:-}" ] && [ -n "${REGISTRY_PASSWORD:-}" ] && [ -n "$IMAGE_REPOSITORY" ]; then
@@ -89,6 +115,9 @@ if [ -n "${REGISTRY_USERNAME:-}" ]; then
 fi
 if [ -n "${REGISTRY_PASSWORD:-}" ]; then
   echo "docker_registry_psw=\"$REGISTRY_PASSWORD\"" >> "$TF_RUNTIME_VARS_PATH"
+fi
+if [ -n "${REGISTRY_HOST:-}" ] && [ -n "${REGISTRY_USERNAME:-}" ] && [ -n "${REGISTRY_PASSWORD:-}" ]; then
+  echo "create_image_pull_secret=true" >> "$TF_RUNTIME_VARS_PATH"
 fi
 
 terraform_args=(
