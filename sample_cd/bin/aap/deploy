@@ -7,14 +7,34 @@ if [ ! -f tf.plan ]; then
 fi
 
 echo "=== Stage: Kubernetes Deploy ==="
+NS="$(awk -F'=' '/^[[:space:]]*k8s_namespace[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
+APP_NAME="$(awk -F'=' '/^[[:space:]]*app_name[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
+PULL_SECRET_NAME="$(awk -F'=' '/^[[:space:]]*docker_registry_secret_name[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
+
+# Recover from drift caused by prior failed state persistence.
+if [ -n "$NS" ] && [ -n "$PULL_SECRET_NAME" ]; then
+  kubectl -n "$NS" delete secret "$PULL_SECRET_NAME" --ignore-not-found >/dev/null 2>&1 || true
+fi
+
 deploy_failed=false
-if ! terraform apply -lock=false -auto-approve tf.plan; then
+apply_output_file="$(mktemp)"
+if ! terraform apply -lock=false -auto-approve tf.plan >"$apply_output_file" 2>&1; then
   deploy_failed=true
 fi
 
+cat "$apply_output_file"
+
+if [ "$deploy_failed" = true ] && grep -q "Failed to persist state to backend" "$apply_output_file" && [ -f errored.tfstate ]; then
+  echo "Attempting backend recovery with terraform state push..."
+  if terraform state push -lock=false errored.tfstate; then
+    echo "State push recovery succeeded."
+    deploy_failed=false
+  fi
+fi
+
+rm -f "$apply_output_file"
+
 if [ "$deploy_failed" = true ]; then
-  NS="$(awk -F'=' '/^[[:space:]]*k8s_namespace[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
-  APP_NAME="$(awk -F'=' '/^[[:space:]]*app_name[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
   K8S_CONFIG_RESOLVED="$(awk -F'=' '/^[[:space:]]*k8s_config[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-runtime.auto.tfvars" 2>/dev/null || true)"
   if [ -z "$K8S_CONFIG_RESOLVED" ]; then
     K8S_CONFIG_RESOLVED="$(awk -F'=' '/^[[:space:]]*k8s_config[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-secret.tfvars" 2>/dev/null || true)"
