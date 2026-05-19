@@ -1,6 +1,294 @@
 #!/bin/bash
 set -euo pipefail
 
+TF_PLAN_RAW_PATH="tf.plan"
+TF_PLAN_JSON_PATH="tf.json"
+TF_RUNTIME_VARS_PATH="vars/$ENV_NAME/terraform-runtime.auto.tfvars"
+SECRET_TFVARS_PATH="vars/$ENV_NAME/terraform-secret.tfvars"
+CONFIG_TFVARS_PATH="vars/$ENV_NAME/terraform-config.tfvars"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+pick_first() {
+  for var_name in "$@"; do
+    if [ -n "${!var_name:-}" ]; then
+      printf '%s' "${!var_name}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+tfvar_value() {
+  local key="$1"
+  local file="$2"
+  if [ ! -f "$file" ]; then
+    return 0
+  fi
+  awk -F'=' -v key="$key" '
+    $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
+      value=$2
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      gsub(/^"/, "", value)
+      gsub(/"$/, "", value)
+      print value
+      exit
+    }
+  ' "$file"
+}
+
+if [ -z "${ENV_NAME:-}" ]; then
+  echo "Missing required environment variable: ENV_NAME"
+  exit 1
+fi
+
+if [ ! -f "$SECRET_TFVARS_PATH" ]; then
+  echo "Missing secret tfvars: $SECRET_TFVARS_PATH"
+  exit 1
+fi
+
+first_line="$(sed -n '1p' "$SECRET_TFVARS_PATH" || true)"
+if [[ "$first_line" == \$ANSIBLE_VAULT* ]]; then
+  if [ -z "${ANSIBLE_VAULT_SECRET_PATH:-}" ]; then
+    echo "terraform-secret.tfvars is encrypted but ANSIBLE_VAULT_SECRET_PATH is not set."
+    exit 1
+  fi
+  sh "$SCRIPT_DIR/ansible-vault" decrypt "$SECRET_TFVARS_PATH"
+fi
+
+IMAGE_TAG="$(pick_first APPLICATION_INFRA_TAG application_infra_tag APP_TAG IMAGE_TAG CI_COMMIT_TAG || true)"
+if [ -z "${IMAGE_TAG:-}" ]; then
+  echo "Missing image tag. Set APPLICATION_INFRA_TAG (or IMAGE_TAG)."
+  exit 1
+fi
+
+IMAGE_REPOSITORY="$(pick_first DOCKER_IMAGE_REPOSITORY HARBOR_IMAGE_REPOSITORY || true)"
+if [ -z "${IMAGE_REPOSITORY:-}" ]; then
+  IMAGE_REPOSITORY="$(tfvar_value image_repository "$CONFIG_TFVARS_PATH")"
+fi
+if [ -z "${IMAGE_REPOSITORY:-}" ]; then
+  echo "Missing image_repository. Set in $CONFIG_TFVARS_PATH or DOCKER_IMAGE_REPOSITORY."
+  exit 1
+fi
+
+REGISTRY_HOST="$(pick_first DOCKER_REGISTRY_HOST HARBOR_HOST || true)"
+if [ -z "${REGISTRY_HOST:-}" ]; then
+  REGISTRY_HOST="$(tfvar_value docker_registry_host "$CONFIG_TFVARS_PATH")"
+fi
+if [ -z "${REGISTRY_HOST:-}" ]; then
+  REGISTRY_HOST="${IMAGE_REPOSITORY%%/*}"
+fi
+
+REGISTRY_USERNAME="$(pick_first DOCKER_REGISTRY_USERNAME HARBOR_USERNAME || true)"
+REGISTRY_PASSWORD="$(pick_first DOCKER_REGISTRY_PASSWORD HARBOR_PASSWORD || true)"
+if [ -z "${REGISTRY_USERNAME:-}" ]; then
+  REGISTRY_USERNAME="$(tfvar_value docker_registry_usr "$SECRET_TFVARS_PATH")"
+fi
+if [ -z "${REGISTRY_PASSWORD:-}" ]; then
+  REGISTRY_PASSWORD="$(tfvar_value docker_registry_psw "$SECRET_TFVARS_PATH")"
+fi
+
+if [ -z "${REGISTRY_USERNAME:-}" ] || [ -z "${REGISTRY_PASSWORD:-}" ]; then
+  echo "Missing Harbor credentials (docker_registry_usr/docker_registry_psw)."
+  exit 1
+fi
+
+IMAGE_REF="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+echo "Building and pushing image: $IMAGE_REF"
+
+if command -v docker >/dev/null 2>&1; then
+  docker login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD"
+  docker build -t "$IMAGE_REF" "$REPO_ROOT"
+  docker push "$IMAGE_REF"
+elif command -v podman >/dev/null 2>&1; then
+  podman login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD"
+  podman build -t "$IMAGE_REF" "$REPO_ROOT"
+  podman push "$IMAGE_REF"
+elif command -v buildah >/dev/null 2>&1; then
+  buildah login -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD" "$REGISTRY_HOST"
+  buildah bud -t "$IMAGE_REF" "$REPO_ROOT"
+  buildah push "$IMAGE_REF"
+else
+  echo "No supported image builder found (docker/podman/buildah)."
+  exit 1
+fi
+
+: > "$TF_RUNTIME_VARS_PATH"
+echo "env_name=\"$ENV_NAME\"" >> "$TF_RUNTIME_VARS_PATH"
+if [ -n "${K8S_CONFIG_PATH:-}" ]; then
+  echo "k8s_config=\"$K8S_CONFIG_PATH\"" >> "$TF_RUNTIME_VARS_PATH"
+fi
+echo "image_repository=\"$IMAGE_REPOSITORY\"" >> "$TF_RUNTIME_VARS_PATH"
+echo "image_tag=\"$IMAGE_TAG\"" >> "$TF_RUNTIME_VARS_PATH"
+echo "docker_registry_host=\"$REGISTRY_HOST\"" >> "$TF_RUNTIME_VARS_PATH"
+echo "docker_registry_usr=\"$REGISTRY_USERNAME\"" >> "$TF_RUNTIME_VARS_PATH"
+echo "docker_registry_psw=\"$REGISTRY_PASSWORD\"" >> "$TF_RUNTIME_VARS_PATH"
+
+terraform plan -lock=false --out "$TF_PLAN_RAW_PATH" \
+  -var-file="$CONFIG_TFVARS_PATH" \
+  -var-file="$SECRET_TFVARS_PATH" \
+  -var-file="$TF_RUNTIME_VARS_PATH"
+
+terraform show -json "$TF_PLAN_RAW_PATH" > "$TF_PLAN_JSON_PATH"
+terraform graph -plan="$TF_PLAN_RAW_PATH"
+#!/bin/bash
+set -euo pipefail
+
+TF_PLAN_RAW_PATH="tf.plan"
+TF_PLAN_JSON_PATH="tf.json"
+TF_RUNTIME_VARS_PATH="vars/$ENV_NAME/terraform-runtime.auto.tfvars"
+SECRET_TFVARS_PATH="vars/$ENV_NAME/terraform-secret.tfvars"
+CONFIG_TFVARS_PATH="vars/$ENV_NAME/terraform-config.tfvars"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+pick_first() {
+  for var_name in "$@"; do
+    if [ -n "${!var_name:-}" ]; then
+      printf '%s' "${!var_name}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+tfvar_value() {
+  local key="$1"
+  local file="$2"
+  if [ ! -f "$file" ]; then
+    return 0
+  fi
+  awk -F'=' -v key="$key" '
+    $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
+      value=$2
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      gsub(/^"/, "", value)
+      gsub(/"$/, "", value)
+      print value
+      exit
+    }
+  ' "$file"
+}
+
+if [ -z "${ENV_NAME:-}" ]; then
+  echo "Missing required environment variable: ENV_NAME"
+  exit 1
+fi
+
+if [ ! -f "$SECRET_TFVARS_PATH" ]; then
+  echo "Missing secret tfvars: $SECRET_TFVARS_PATH"
+  exit 1
+fi
+
+first_line="$(sed -n '1p' "$SECRET_TFVARS_PATH" || true)"
+if [[ "$first_line" == \$ANSIBLE_VAULT* ]]; then
+  if [ -z "${ANSIBLE_VAULT_SECRET_PATH:-}" ]; then
+    echo "terraform-secret.tfvars is encrypted but ANSIBLE_VAULT_SECRET_PATH is not set."
+    exit 1
+  fi
+  sh "$SCRIPT_DIR/ansible-vault" decrypt "$SECRET_TFVARS_PATH"
+fi
+
+IMAGE_TAG="$(pick_first APPLICATION_INFRA_TAG application_infra_tag APP_TAG IMAGE_TAG CI_COMMIT_TAG || true)"
+if [ -z "${IMAGE_TAG:-}" ]; then
+  echo "Missing image tag. Set APPLICATION_INFRA_TAG (or IMAGE_TAG)."
+  exit 1
+fi
+
+IMAGE_REPOSITORY="$(pick_first DOCKER_IMAGE_REPOSITORY HARBOR_IMAGE_REPOSITORY || true)"
+if [ -z "${IMAGE_REPOSITORY:-}" ]; then
+  IMAGE_REPOSITORY="$(tfvar_value image_repository "$CONFIG_TFVARS_PATH")"
+fi
+if [ -z "${IMAGE_REPOSITORY:-}" ]; then
+  echo "Missing image_repository. Set in $CONFIG_TFVARS_PATH or DOCKER_IMAGE_REPOSITORY."
+  exit 1
+fi
+
+REGISTRY_HOST="$(pick_first DOCKER_REGISTRY_HOST HARBOR_HOST || true)"
+if [ -z "${REGISTRY_HOST:-}" ]; then
+  REGISTRY_HOST="$(tfvar_value docker_registry_host "$CONFIG_TFVARS_PATH")"
+fi
+if [ -z "${REGISTRY_HOST:-}" ]; then
+  REGISTRY_HOST="${IMAGE_REPOSITORY%%/*}"
+fi
+
+REGISTRY_USERNAME="$(pick_first DOCKER_REGISTRY_USERNAME HARBOR_USERNAME || true)"
+REGISTRY_PASSWORD="$(pick_first DOCKER_REGISTRY_PASSWORD HARBOR_PASSWORD || true)"
+if [ -z "${REGISTRY_USERNAME:-}" ]; then
+  REGISTRY_USERNAME="$(tfvar_value docker_registry_usr "$SECRET_TFVARS_PATH")"
+fi
+if [ -z "${REGISTRY_PASSWORD:-}" ]; then
+  REGISTRY_PASSWORD="$(tfvar_value docker_registry_psw "$SECRET_TFVARS_PATH")"
+fi
+
+if [ -z "${REGISTRY_USERNAME:-}" ] || [ -z "${REGISTRY_PASSWORD:-}" ]; then
+  echo "Missing Harbor credentials (docker_registry_usr/docker_registry_psw)."
+  exit 1
+fi
+
+IMAGE_REF="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+echo "Building and pushing image: $IMAGE_REF"
+
+if command -v docker >/dev/null 2>&1; then
+  docker login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD"
+  docker build -t "$IMAGE_REF" .
+  docker push "$IMAGE_REF"
+elif command -v podman >/dev/null 2>&1; then
+  podman login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD"
+  podman build -t "$IMAGE_REF" .
+  podman push "$IMAGE_REF"
+elif command -v buildah >/dev/null 2>&1; then
+  buildah login -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD" "$REGISTRY_HOST"
+  buildah bud -t "$IMAGE_REF" .
+  buildah push "$IMAGE_REF"
+else
+  echo "No supported image builder found (docker/podman/buildah)."
+  exit 1
+fi
+
+: > "$TF_RUNTIME_VARS_PATH"
+echo "env_name=\"$ENV_NAME\"" >> "$TF_RUNTIME_VARS_PATH"
+if [ -n "${K8S_CONFIG_PATH:-}" ]; then
+  echo "k8s_config=\"$K8S_CONFIG_PATH\"" >> "$TF_RUNTIME_VARS_PATH"
+fi
+echo "image_repository=\"$IMAGE_REPOSITORY\"" >> "$TF_RUNTIME_VARS_PATH"
+echo "image_tag=\"$IMAGE_TAG\"" >> "$TF_RUNTIME_VARS_PATH"
+echo "docker_registry_host=\"$REGISTRY_HOST\"" >> "$TF_RUNTIME_VARS_PATH"
+echo "docker_registry_usr=\"$REGISTRY_USERNAME\"" >> "$TF_RUNTIME_VARS_PATH"
+echo "docker_registry_psw=\"$REGISTRY_PASSWORD\"" >> "$TF_RUNTIME_VARS_PATH"
+
+terraform plan -lock=false --out "$TF_PLAN_RAW_PATH" \
+  -var-file="$CONFIG_TFVARS_PATH" \
+  -var-file="$SECRET_TFVARS_PATH" \
+  -var-file="$TF_RUNTIME_VARS_PATH"
+
+terraform show -json "$TF_PLAN_RAW_PATH" > "$TF_PLAN_JSON_PATH"
+terraform graph -plan="$TF_PLAN_RAW_PATH"
+#!/bin/bash
+set -e
+
+TF_PLAN_RAW_PATH="tf.plan"
+TF_PLAN_JSON_PATH="tf.json"
+
+sh $WORKSPACE/ansible-vault "decrypt" "vars/$ENV_NAME/terraform-secret.tfvars"
+sh $WORKSPACE/ansible-vault "decrypt" "vars/$ENV_NAME/admin_gui_session_conf"
+sh $WORKSPACE/ansible-vault "decrypt" "vars/$ENV_NAME/portal_session_conf"
+sh $WORKSPACE/ansible-vault "decrypt" "vars/$ENV_NAME/admin_gui_auth_conf"
+sh $WORKSPACE/ansible-vault "decrypt" "vars/$ENV_NAME/tls.key"
+sh $WORKSPACE/ansible-vault "decrypt" "vars/$ENV_NAME/ingress.key"
+sh $WORKSPACE/ansible-vault "decrypt" "vars/$ENV_NAME/license.json"
+
+echo "k8s_config=\"$K8S_CONFIG_PATH\"" >> vars/$ENV_NAME/terraform-secret.tfvars
+echo "env_name=\"$ENV_NAME\"" >> vars/$ENV_NAME/terraform-config.tfvars
+
+terraform plan --out $TF_PLAN_RAW_PATH -var-file=vars/$ENV_NAME/terraform-config.tfvars -var-file=./vars/$ENV_NAME/terraform-secret.tfvars
+terraform show -json $TF_PLAN_RAW_PATH > $TF_PLAN_JSON_PATH
+
+terraform graph -plan=$TF_PLAN_RAW_PATH 
+#!/bin/bash
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CD_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REPO_ROOT="$(cd "$CD_ROOT/.." && pwd)"
@@ -36,6 +324,47 @@ tfvar_value() {
       }
     ' "$file"
   fi
+}
+
+harbor_preflight_check() {
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "ERROR: curl is required for Harbor preflight checks."
+    exit 1
+  fi
+
+  local image_path
+  image_path="${IMAGE_REPOSITORY#${REGISTRY_HOST}/}"
+  if [[ "$image_path" != */* ]]; then
+    echo "ERROR: image_repository must include Harbor project/repository path: $IMAGE_REPOSITORY"
+    exit 1
+  fi
+  local harbor_project harbor_repo
+  harbor_project="${image_path%%/*}"
+  harbor_repo="${image_path#*/}"
+
+  if [ -z "$harbor_project" ] || [ -z "$harbor_repo" ]; then
+    echo "ERROR: Cannot parse Harbor project/repository from image_repository: $IMAGE_REPOSITORY"
+    exit 1
+  fi
+
+  local harbor_api
+  harbor_api="https://${REGISTRY_HOST}/api/v2.0"
+
+  local auth_code tag_code repo_encoded
+  auth_code="$(curl -k -sS -o /dev/null -w "%{http_code}" --user "${REGISTRY_USERNAME}:${REGISTRY_PASSWORD}" "${harbor_api}/projects/${harbor_project}")"
+  if [ "$auth_code" -ne 200 ]; then
+    echo "ERROR: Harbor auth/project check failed for project '${harbor_project}' (HTTP ${auth_code})."
+    exit 1
+  fi
+
+  repo_encoded="${harbor_repo//\//%2F}"
+  tag_code="$(curl -k -sS -o /dev/null -w "%{http_code}" --user "${REGISTRY_USERNAME}:${REGISTRY_PASSWORD}" "${harbor_api}/projects/${harbor_project}/repositories/${repo_encoded}/artifacts/${IMAGE_TAG}")"
+  if [ "$tag_code" -ne 200 ]; then
+    echo "ERROR: Harbor image tag not found or inaccessible: ${IMAGE_REPOSITORY}:${IMAGE_TAG} (HTTP ${tag_code})."
+    exit 1
+  fi
+
+  echo "Harbor preflight passed: ${IMAGE_REPOSITORY}:${IMAGE_TAG} exists and is accessible."
 }
 
 REGISTRY_HOST="$(pick_first DOCKER_REGISTRY_HOST HARBOR_HOST TARGET_HARBOR_HOST SOURCE_HARBOR_HOST HARBOR_REGISTRY_HOST || true)"
@@ -149,6 +478,9 @@ fi
 
 echo "Image reference selected for deployment: ${IMAGE_REPOSITORY}:${IMAGE_TAG}"
 echo "Image build/push is handled outside this script."
+
+echo "=== Stage: Harbor Preflight ==="
+harbor_preflight_check
 
 : > "$TF_RUNTIME_VARS_PATH"
 echo "env_name=\"$ENV_NAME\"" >> "$TF_RUNTIME_VARS_PATH"
