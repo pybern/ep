@@ -179,38 +179,7 @@ if [ "$USE_SECRET_TFVARS" = true ]; then
   terraform_args+=("-var-file=$SECRET_TFVARS_PATH")
 fi
 
-MAX_LOCK_RETRIES="${MAX_LOCK_RETRIES:-8}"
-LOCK_RETRY_DELAY_SECONDS="${LOCK_RETRY_DELAY_SECONDS:-15}"
-lock_attempt=1
-
-while true; do
-  plan_output_file="$(mktemp)"
-  set +e
-  terraform plan --out "$TF_PLAN_RAW_PATH" "${terraform_args[@]}" >"$plan_output_file" 2>&1
-  plan_rc=$?
-  set -e
-
-  if [ "$plan_rc" -eq 0 ]; then
-    cat "$plan_output_file"
-    rm -f "$plan_output_file"
-    break
-  fi
-
-  if grep -q "Error acquiring the state lock" "$plan_output_file"; then
-    if [ "$lock_attempt" -lt "$MAX_LOCK_RETRIES" ]; then
-      echo "Terraform state is locked. Retry $lock_attempt/$MAX_LOCK_RETRIES in ${LOCK_RETRY_DELAY_SECONDS}s..."
-      rm -f "$plan_output_file"
-      lock_attempt=$((lock_attempt + 1))
-      sleep "$LOCK_RETRY_DELAY_SECONDS"
-      continue
-    fi
-    echo "Terraform state remained locked after $MAX_LOCK_RETRIES attempts."
-  fi
-
-  cat "$plan_output_file"
-  rm -f "$plan_output_file"
-  exit "$plan_rc"
-done
+terraform plan -lock=false --out "$TF_PLAN_RAW_PATH" "${terraform_args[@]}"
 
 terraform show -json "$TF_PLAN_RAW_PATH" > "$TF_PLAN_JSON_PATH"
 terraform graph -plan="$TF_PLAN_RAW_PATH"

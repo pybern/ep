@@ -8,7 +8,7 @@ fi
 
 echo "=== Stage: Kubernetes Deploy ==="
 deploy_failed=false
-if ! terraform apply -auto-approve tf.plan; then
+if ! terraform apply -lock=false -auto-approve tf.plan; then
   deploy_failed=true
 fi
 
