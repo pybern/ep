@@ -84,8 +84,12 @@ fi
 
 IMAGE_TAG="$(pick_first APPLICATION_INFRA_TAG application_infra_tag APP_INFRA_TAG APPLICATION_TAG APP_TAG IMAGE_TAG GIT_TAG CI_COMMIT_TAG || true)"
 if [ -z "${IMAGE_TAG:-}" ]; then
+  IMAGE_TAG="$(git -C "$REPO_ROOT" describe --tags --exact-match 2>/dev/null || git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+fi
+if [ -z "${IMAGE_TAG:-}" ]; then
   echo "ERROR: Missing deployment image tag."
   echo "Expected one of: APPLICATION_INFRA_TAG, application_infra_tag, APP_INFRA_TAG, APPLICATION_TAG, APP_TAG, IMAGE_TAG, GIT_TAG, CI_COMMIT_TAG"
+  echo "Also attempted fallback from current git ref but could not resolve a tag/commit."
   exit 1
 fi
 
