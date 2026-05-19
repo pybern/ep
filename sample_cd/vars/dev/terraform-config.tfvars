@@ -12,7 +12,7 @@ ingress_host = ""
 ingress_class_name = "nginx"
 ingress_tls_secret_name = ""
 
-create_image_pull_secret = false
-docker_registry_secret_name = "tois-registry-secret"
+create_image_pull_secret = true
+docker_registry_secret_name = "tois-uat-harbor-pull-secret"
 docker_registry_host = "dpsauatdk01.intra.hkma.gov.hk:8443"
 image_repository = "dpsauatdk01.intra.hkma.gov.hk:8443/tois/tois"

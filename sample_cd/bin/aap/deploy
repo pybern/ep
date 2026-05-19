@@ -6,6 +6,7 @@ if [ ! -f tf.plan ]; then
   exit 1
 fi
 
+echo "=== Stage: Kubernetes Deploy ==="
 deploy_failed=false
 if ! terraform apply -auto-approve tf.plan; then
   deploy_failed=true
@@ -37,3 +38,5 @@ if [ "$deploy_failed" = true ]; then
   fi
   exit 1
 fi
+
+echo "Kubernetes deployment complete."
