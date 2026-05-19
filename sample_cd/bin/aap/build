@@ -98,6 +98,24 @@ build_and_push_kaniko() {
     exit 127
   fi
 
+  K8S_CONFIG_RESOLVED="$(pick_first K8S_CONFIG_PATH KUBECONFIG K8S_CONFIG KUBE_CONFIG_PATH || true)"
+  if [ -z "${K8S_CONFIG_RESOLVED:-}" ]; then
+    K8S_CONFIG_RESOLVED="$(tfvar_value k8s_config "$SECRET_TFVARS_PATH")"
+  fi
+  if [ -z "${K8S_CONFIG_RESOLVED:-}" ]; then
+    K8S_CONFIG_RESOLVED="$(tfvar_value k8s_config "vars/$ENV_NAME/terraform-config.tfvars")"
+  fi
+  if [ -n "${K8S_CONFIG_RESOLVED:-}" ]; then
+    export KUBECONFIG="$K8S_CONFIG_RESOLVED"
+    echo "Using KUBECONFIG for Kaniko fallback: $KUBECONFIG"
+  fi
+
+  if ! kubectl version --request-timeout=15s >/dev/null 2>&1; then
+    echo "ERROR: kubectl cannot connect to cluster for Kaniko fallback."
+    echo "Ensure kubeconfig is available to build stage (K8S_CONFIG_PATH/KUBECONFIG) and cluster access is permitted."
+    exit 1
+  fi
+
   BUILD_NAMESPACE="$(tfvar_value k8s_namespace "vars/$ENV_NAME/terraform-config.tfvars")"
   if [ -z "${BUILD_NAMESPACE:-}" ]; then
     echo "ERROR: k8s_namespace not found in vars/$ENV_NAME/terraform-config.tfvars"
