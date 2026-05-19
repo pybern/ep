@@ -125,6 +125,7 @@ build_and_push_kaniko() {
   KANIKO_IMAGE="${KANIKO_IMAGE:-${REGISTRY_HOST}/dockerhub-proxy/kaniko-project/executor:debug}"
   KANIKO_POD_NAME="tois-kaniko-${ENV_NAME}-$(date +%s)"
   KANIKO_SECRET_NAME="tois-kaniko-regcred-$(date +%s)"
+  KANIKO_READY_TIMEOUT="${KANIKO_READY_TIMEOUT:-420s}"
   trap cleanup_kaniko EXIT
 
   echo "=== Stage: Kaniko Build (Kubernetes) ==="
@@ -151,6 +152,8 @@ metadata:
   name: ${KANIKO_POD_NAME}
 spec:
   restartPolicy: Never
+  imagePullSecrets:
+    - name: ${KANIKO_SECRET_NAME}
   containers:
     - name: kaniko
       image: ${KANIKO_IMAGE}
@@ -164,7 +167,13 @@ spec:
         secretName: ${KANIKO_SECRET_NAME}
 EOF
 
-  kubectl -n "$BUILD_NAMESPACE" wait --for=condition=Ready "pod/${KANIKO_POD_NAME}" --timeout=180s
+  if ! kubectl -n "$BUILD_NAMESPACE" wait --for=condition=Ready "pod/${KANIKO_POD_NAME}" --timeout="$KANIKO_READY_TIMEOUT"; then
+    echo "ERROR: Kaniko pod did not become Ready within $KANIKO_READY_TIMEOUT"
+    kubectl -n "$BUILD_NAMESPACE" describe pod "$KANIKO_POD_NAME" || true
+    kubectl -n "$BUILD_NAMESPACE" get events --sort-by=.metadata.creationTimestamp | tail -n 80 || true
+    kubectl -n "$BUILD_NAMESPACE" logs "$KANIKO_POD_NAME" -c kaniko --tail=200 || true
+    exit 1
+  fi
   kubectl -n "$BUILD_NAMESPACE" cp "$REPO_ROOT/." "${KANIKO_POD_NAME}:/workspace"
 
   kubectl -n "$BUILD_NAMESPACE" exec "$KANIKO_POD_NAME" -- /kaniko/executor \
