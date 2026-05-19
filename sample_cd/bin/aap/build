@@ -38,6 +38,126 @@ tfvar_value() {
   fi
 }
 
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+cleanup_kaniko() {
+  if [ -n "${KANIKO_POD_NAME:-}" ] && [ -n "${BUILD_NAMESPACE:-}" ]; then
+    kubectl -n "$BUILD_NAMESPACE" delete pod "$KANIKO_POD_NAME" --ignore-not-found >/dev/null 2>&1 || true
+  fi
+  if [ -n "${KANIKO_SECRET_NAME:-}" ] && [ -n "${BUILD_NAMESPACE:-}" ]; then
+    kubectl -n "$BUILD_NAMESPACE" delete secret "$KANIKO_SECRET_NAME" --ignore-not-found >/dev/null 2>&1 || true
+  fi
+}
+
+build_and_push_local() {
+  echo "=== Stage: Harbor Login ==="
+  if command_exists docker; then
+    echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" --password-stdin
+    echo "Harbor login complete."
+    echo "=== Stage: Container Build ==="
+    docker build -t "$IMAGE_REF" -f "$REPO_ROOT/Dockerfile" "$REPO_ROOT"
+    echo "Container build complete: $IMAGE_REF"
+    echo "=== Stage: Harbor Push ==="
+    docker push "$IMAGE_REF"
+    echo "Harbor push complete: $IMAGE_REF"
+    return 0
+  fi
+
+  if command_exists podman; then
+    echo "$REGISTRY_PASSWORD" | podman login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" --password-stdin
+    echo "Harbor login complete."
+    echo "=== Stage: Container Build ==="
+    podman build -t "$IMAGE_REF" -f "$REPO_ROOT/Dockerfile" "$REPO_ROOT"
+    echo "Container build complete: $IMAGE_REF"
+    echo "=== Stage: Harbor Push ==="
+    podman push "$IMAGE_REF"
+    echo "Harbor push complete: $IMAGE_REF"
+    return 0
+  fi
+
+  if command_exists buildah; then
+    echo "$REGISTRY_PASSWORD" | buildah login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" --password-stdin
+    echo "Harbor login complete."
+    echo "=== Stage: Container Build ==="
+    buildah bud -t "$IMAGE_REF" -f "$REPO_ROOT/Dockerfile" "$REPO_ROOT"
+    echo "Container build complete: $IMAGE_REF"
+    echo "=== Stage: Harbor Push ==="
+    buildah push "$IMAGE_REF"
+    echo "Harbor push complete: $IMAGE_REF"
+    return 0
+  fi
+
+  return 1
+}
+
+build_and_push_kaniko() {
+  if ! command_exists kubectl; then
+    echo "ERROR: kubectl not found; cannot use in-cluster Kaniko fallback."
+    exit 127
+  fi
+
+  BUILD_NAMESPACE="$(tfvar_value k8s_namespace "vars/$ENV_NAME/terraform-config.tfvars")"
+  if [ -z "${BUILD_NAMESPACE:-}" ]; then
+    echo "ERROR: k8s_namespace not found in vars/$ENV_NAME/terraform-config.tfvars"
+    exit 1
+  fi
+
+  KANIKO_IMAGE="${KANIKO_IMAGE:-${REGISTRY_HOST}/dockerhub-proxy/kaniko-project/executor:debug}"
+  KANIKO_POD_NAME="tois-kaniko-${ENV_NAME}-$(date +%s)"
+  KANIKO_SECRET_NAME="tois-kaniko-regcred-$(date +%s)"
+  trap cleanup_kaniko EXIT
+
+  echo "=== Stage: Kaniko Build (Kubernetes) ==="
+  echo "Using namespace: $BUILD_NAMESPACE"
+  echo "Using Kaniko image: $KANIKO_IMAGE"
+
+  DOCKER_CONFIG_JSON="$(cat <<EOF
+{
+  "auths": {
+    "${REGISTRY_HOST}": {
+      "auth": "$(printf '%s' "${REGISTRY_USERNAME}:${REGISTRY_PASSWORD}" | base64 | tr -d '\n')"
+    }
+  }
+}
+EOF
+)"
+
+  kubectl -n "$BUILD_NAMESPACE" create secret generic "$KANIKO_SECRET_NAME" --from-literal=.dockerconfigjson="$DOCKER_CONFIG_JSON" --type=kubernetes.io/dockerconfigjson >/dev/null
+
+  cat <<EOF | kubectl -n "$BUILD_NAMESPACE" apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${KANIKO_POD_NAME}
+spec:
+  restartPolicy: Never
+  containers:
+    - name: kaniko
+      image: ${KANIKO_IMAGE}
+      command: ["/busybox/sh", "-c", "sleep 1800"]
+      volumeMounts:
+        - name: docker-config
+          mountPath: /kaniko/.docker
+  volumes:
+    - name: docker-config
+      secret:
+        secretName: ${KANIKO_SECRET_NAME}
+EOF
+
+  kubectl -n "$BUILD_NAMESPACE" wait --for=condition=Ready "pod/${KANIKO_POD_NAME}" --timeout=180s
+  kubectl -n "$BUILD_NAMESPACE" cp "$REPO_ROOT/." "${KANIKO_POD_NAME}:/workspace"
+
+  kubectl -n "$BUILD_NAMESPACE" exec "$KANIKO_POD_NAME" -- /kaniko/executor \
+    --context=dir:///workspace \
+    --dockerfile=/workspace/Dockerfile \
+    --destination="$IMAGE_REF" \
+    --skip-tls-verify-registry="$REGISTRY_HOST"
+
+  echo "Kaniko build and Harbor push complete: $IMAGE_REF"
+}
+
 REGISTRY_HOST="$(pick_first DOCKER_REGISTRY_HOST HARBOR_HOST TARGET_HARBOR_HOST SOURCE_HARBOR_HOST HARBOR_REGISTRY_HOST || true)"
 REGISTRY_USERNAME="$(pick_first DOCKER_REGISTRY_USERNAME HARBOR_USERNAME TARGET_HARBOR_USERNAME SOURCE_HARBOR_USERNAME HARBOR_USER HARBOR_ACCOUNT TARGET_REPOSITORY_USERNAME SOURCE_REPOSITORY_USERNAME REPOSITORY_USERNAME || true)"
 REGISTRY_PASSWORD="$(pick_first DOCKER_REGISTRY_PASSWORD HARBOR_PASSWORD TARGET_HARBOR_PASSWORD SOURCE_HARBOR_PASSWORD HARBOR_TOKEN TARGET_HARBOR_TOKEN SOURCE_HARBOR_TOKEN TARGET_REPOSITORY_PASSWORD SOURCE_REPOSITORY_PASSWORD REPOSITORY_PASSWORD || true)"
@@ -148,7 +268,12 @@ if [ -z "${REGISTRY_USERNAME:-}" ] || [ -z "${REGISTRY_PASSWORD:-}" ]; then
 fi
 
 echo "Image reference selected for deployment: ${IMAGE_REPOSITORY}:${IMAGE_TAG}"
-echo "Image build/push is handled outside this script."
+IMAGE_REF="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+
+if ! build_and_push_local; then
+  echo "No local container builder found. Falling back to Kaniko on Kubernetes."
+  build_and_push_kaniko
+fi
 
 : > "$TF_RUNTIME_VARS_PATH"
 echo "env_name=\"$ENV_NAME\"" >> "$TF_RUNTIME_VARS_PATH"
