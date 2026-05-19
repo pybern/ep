@@ -1,5 +1,5 @@
 k8s_namespace = "toi-compute"
-app_name = "tois-app"
+app_name = "ep-app"
 replicas = 1
 
 container_port = 3000
