@@ -10,9 +10,17 @@ echo "=== Stage: Kubernetes Deploy ==="
 NS="$(awk -F'=' '/^[[:space:]]*k8s_namespace[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
 APP_NAME="$(awk -F'=' '/^[[:space:]]*app_name[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
 PULL_SECRET_NAME="$(awk -F'=' '/^[[:space:]]*docker_registry_secret_name[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
+K8S_CONFIG_RESOLVED="$(awk -F'=' '/^[[:space:]]*k8s_config[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-runtime.auto.tfvars" 2>/dev/null || true)"
+if [ -z "$K8S_CONFIG_RESOLVED" ]; then
+  K8S_CONFIG_RESOLVED="$(awk -F'=' '/^[[:space:]]*k8s_config[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-secret.tfvars" 2>/dev/null || true)"
+fi
+if [ -n "$K8S_CONFIG_RESOLVED" ]; then
+  export KUBECONFIG="$K8S_CONFIG_RESOLVED"
+  echo "Using KUBECONFIG: $KUBECONFIG"
+fi
 
 # Recover from drift caused by prior failed state persistence.
-if [ -n "$NS" ] && [ -n "$PULL_SECRET_NAME" ]; then
+if [ -n "$NS" ] && [ -n "$PULL_SECRET_NAME" ] && kubectl version --request-timeout=10s >/dev/null 2>&1; then
   kubectl -n "$NS" delete secret "$PULL_SECRET_NAME" --ignore-not-found >/dev/null 2>&1 || true
 fi
 
@@ -26,21 +34,21 @@ cat "$apply_output_file"
 
 if [ "$deploy_failed" = true ] && grep -q "Failed to persist state to backend" "$apply_output_file" && [ -f errored.tfstate ]; then
   echo "Attempting backend recovery with terraform state push..."
-  if terraform state push -lock=false errored.tfstate; then
+  state_push_output_file="$(mktemp)"
+  if terraform state push -lock=false errored.tfstate >"$state_push_output_file" 2>&1; then
+    cat "$state_push_output_file"
     echo "State push recovery succeeded."
     deploy_failed=false
+  else
+    cat "$state_push_output_file"
   fi
+  rm -f "$state_push_output_file"
 fi
 
 rm -f "$apply_output_file"
 
 if [ "$deploy_failed" = true ]; then
-  K8S_CONFIG_RESOLVED="$(awk -F'=' '/^[[:space:]]*k8s_config[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-runtime.auto.tfvars" 2>/dev/null || true)"
-  if [ -z "$K8S_CONFIG_RESOLVED" ]; then
-    K8S_CONFIG_RESOLVED="$(awk -F'=' '/^[[:space:]]*k8s_config[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-secret.tfvars" 2>/dev/null || true)"
-  fi
-  if [ -n "$K8S_CONFIG_RESOLVED" ]; then
-    export KUBECONFIG="$K8S_CONFIG_RESOLVED"
+  if [ -n "$KUBECONFIG" ]; then
     echo "Using KUBECONFIG for diagnostics: $KUBECONFIG"
   fi
   if [ -n "$NS" ]; then
