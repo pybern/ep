@@ -20,6 +20,24 @@ pick_first() {
   return 1
 }
 
+tfvar_value() {
+  local key="$1"
+  local file="$2"
+  if [ -f "$file" ]; then
+    awk -F'=' -v key="$key" '
+      $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
+        value=$2
+        sub(/^[[:space:]]*/, "", value)
+        sub(/[[:space:]]*$/, "", value)
+        gsub(/^"/, "", value)
+        gsub(/"$/, "", value)
+        print value
+        exit
+      }
+    ' "$file"
+  fi
+}
+
 REGISTRY_HOST="$(pick_first DOCKER_REGISTRY_HOST HARBOR_HOST TARGET_HARBOR_HOST SOURCE_HARBOR_HOST HARBOR_REGISTRY_HOST || true)"
 REGISTRY_USERNAME="$(pick_first DOCKER_REGISTRY_USERNAME HARBOR_USERNAME TARGET_HARBOR_USERNAME SOURCE_HARBOR_USERNAME HARBOR_USER HARBOR_ACCOUNT TARGET_REPOSITORY_USERNAME SOURCE_REPOSITORY_USERNAME REPOSITORY_USERNAME || true)"
 REGISTRY_PASSWORD="$(pick_first DOCKER_REGISTRY_PASSWORD HARBOR_PASSWORD TARGET_HARBOR_PASSWORD SOURCE_HARBOR_PASSWORD HARBOR_TOKEN TARGET_HARBOR_TOKEN SOURCE_HARBOR_TOKEN TARGET_REPOSITORY_PASSWORD SOURCE_REPOSITORY_PASSWORD REPOSITORY_PASSWORD || true)"
@@ -42,16 +60,26 @@ if [ -f "$SECRET_TFVARS_PATH" ]; then
       if sh "$SCRIPT_DIR/ansible-vault" "decrypt" "$SECRET_TFVARS_PATH"; then
         USE_SECRET_TFVARS=true
       else
-        echo "Vault decrypt failed; continuing without terraform-secret.tfvars."
+        echo "ERROR: Vault decrypt failed. Harbor robot credentials are required for image build/push."
+        exit 1
       fi
     else
-      echo "Skipping encrypted terraform-secret.tfvars (ANSIBLE_VAULT_SECRET_PATH not set)."
+      echo "ERROR: terraform-secret.tfvars is encrypted but ANSIBLE_VAULT_SECRET_PATH is not set."
+      exit 1
     fi
   else
     USE_SECRET_TFVARS=true
   fi
 else
-  echo "No terraform-secret.tfvars found; continuing without secret tfvars."
+  echo "ERROR: No terraform-secret.tfvars found. Harbor robot credentials are required for image build/push."
+  exit 1
+fi
+
+if [ -z "${REGISTRY_USERNAME:-}" ]; then
+  REGISTRY_USERNAME="$(tfvar_value docker_registry_usr "$SECRET_TFVARS_PATH")"
+fi
+if [ -z "${REGISTRY_PASSWORD:-}" ]; then
+  REGISTRY_PASSWORD="$(tfvar_value docker_registry_psw "$SECRET_TFVARS_PATH")"
 fi
 
 if [ -n "${APPLICATION_INFRA_TAG:-}" ]; then
@@ -81,33 +109,49 @@ else
 fi
 
 if [ -z "${REGISTRY_HOST:-}" ]; then
-  REGISTRY_HOST="$(awk -F'=' '/^[[:space:]]*docker_registry_host[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
+  REGISTRY_HOST="$(tfvar_value docker_registry_host "vars/$ENV_NAME/terraform-config.tfvars")"
 fi
 
 if [ -z "${REGISTRY_HOST:-}" ] && [ -n "${IMAGE_REPOSITORY:-}" ]; then
   REGISTRY_HOST="${IMAGE_REPOSITORY%%/*}"
 fi
 
+echo "=== Stage: Harbor Build Inputs ==="
 echo "Registry host resolved: ${REGISTRY_HOST:-<empty>}"
 if [ -n "${REGISTRY_USERNAME:-}" ]; then
-  echo "Registry username resolved from environment."
+  echo "Registry username resolved."
 else
   echo "Registry username not found in environment."
 fi
 if [ -n "${REGISTRY_PASSWORD:-}" ]; then
-  echo "Registry password resolved from environment."
+  echo "Registry password resolved."
 else
   echo "Registry password not found in environment."
 fi
+echo "Image repository resolved: ${IMAGE_REPOSITORY:-<empty>}"
+echo "Image tag resolved: ${IMAGE_TAG:-<empty>}"
 
 if [ -n "${REGISTRY_HOST:-}" ] && [ -n "${REGISTRY_USERNAME:-}" ] && [ -n "${REGISTRY_PASSWORD:-}" ] && [ -n "$IMAGE_REPOSITORY" ]; then
   IMAGE_REF="$IMAGE_REPOSITORY:$IMAGE_TAG"
-  echo "Building image $IMAGE_REF"
+  echo "=== Stage: Harbor Login ==="
   echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" --password-stdin
+  echo "Harbor login complete."
+
+  echo "=== Stage: Docker Build ==="
+  echo "Building image $IMAGE_REF"
   docker build -t "$IMAGE_REF" -f "$REPO_ROOT/Dockerfile" "$REPO_ROOT"
+  echo "Docker build complete: $IMAGE_REF"
+
+  echo "=== Stage: Harbor Push ==="
   docker push "$IMAGE_REF"
+  echo "Harbor push complete: $IMAGE_REF"
 else
-  echo "Skipping docker/harbor build-push (deploy-only mode)."
+  echo "Cannot build/push image to Harbor because required registry settings are missing."
+  echo "Required resolved values: registry host, registry username, registry password, and image repository."
+  echo "Available registry-related environment variable names:"
+  env | cut -d= -f1 | grep -Ei '(^|_)(HARBOR|REGISTRY|REPOSITORY|DOCKER|TARGET|SOURCE)' | sort || true
+  echo "Fix the AAP Harbor credential mapping or provide an image that already exists before deploying."
+  exit 1
 fi
 
 : > "$TF_RUNTIME_VARS_PATH"
@@ -132,6 +176,7 @@ if [ -n "${REGISTRY_HOST:-}" ] && [ -n "${REGISTRY_USERNAME:-}" ] && [ -n "${REG
   echo "create_image_pull_secret=true" >> "$TF_RUNTIME_VARS_PATH"
 fi
 
+echo "=== Stage: Terraform Plan ==="
 terraform_args=(
   "-var-file=vars/$ENV_NAME/terraform-config.tfvars"
   "-var-file=$TF_RUNTIME_VARS_PATH"
@@ -143,3 +188,4 @@ fi
 terraform plan --out "$TF_PLAN_RAW_PATH" "${terraform_args[@]}"
 terraform show -json "$TF_PLAN_RAW_PATH" > "$TF_PLAN_JSON_PATH"
 terraform graph -plan="$TF_PLAN_RAW_PATH"
+echo "Terraform plan complete: $TF_PLAN_RAW_PATH"
