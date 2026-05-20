@@ -4,6 +4,99 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CD_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TF_WORK_DIR="$CD_ROOT/tf_app"
+CONFIG_TFVARS_PATH="$CD_ROOT/vars/$ENV_NAME/terraform-config.tfvars"
+RUNTIME_TFVARS_PATH="$TF_WORK_DIR/terraform-runtime.auto.tfvars"
 
-terraform -chdir="$TF_WORK_DIR" apply -lock=false -auto-approve tf.plan
+tfvar_value() {
+  local key="$1"
+  local file="$2"
+  if [ ! -f "$file" ]; then
+    return 0
+  fi
+  awk -F'=' -v key="$key" '
+    $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
+      value=$2
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      gsub(/^"/, "", value)
+      gsub(/"$/, "", value)
+      print value
+      exit
+    }
+  ' "$file"
+}
+
+import_if_exists() {
+  local addr="$1"
+  local kind="$2"
+  local name="$3"
+  local ns="$4"
+  local id="$5"
+
+  if [ -z "$name" ] || [ -z "$ns" ]; then
+    return 0
+  fi
+
+  if ! command -v kubectl >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if ! kubectl -n "$ns" get "$kind" "$name" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local state_list
+  state_list="$(terraform -chdir="$TF_WORK_DIR" state list 2>/dev/null || true)"
+  if [[ "$state_list" == *"$addr"* ]]; then
+    return 0
+  fi
+
+  echo "Importing existing $kind/$name into Terraform state ($addr)"
+  terraform -chdir="$TF_WORK_DIR" import -lock=false "$addr" "$id" >/dev/null
+}
+
+K8S_NAMESPACE="$(tfvar_value k8s_namespace "$RUNTIME_TFVARS_PATH")"
+if [ -z "${K8S_NAMESPACE:-}" ]; then
+  K8S_NAMESPACE="$(tfvar_value k8s_namespace "$CONFIG_TFVARS_PATH")"
+fi
+APP_NAME="$(tfvar_value app_name "$RUNTIME_TFVARS_PATH")"
+if [ -z "${APP_NAME:-}" ]; then
+  APP_NAME="$(tfvar_value app_name "$CONFIG_TFVARS_PATH")"
+fi
+PULL_SECRET_NAME="$(tfvar_value docker_registry_secret_name "$RUNTIME_TFVARS_PATH")"
+if [ -z "${PULL_SECRET_NAME:-}" ]; then
+  PULL_SECRET_NAME="$(tfvar_value docker_registry_secret_name "$CONFIG_TFVARS_PATH")"
+fi
+K8S_CONFIG_RESOLVED="${K8S_CONFIG_PATH:-}"
+if [ -z "${K8S_CONFIG_RESOLVED:-}" ]; then
+  K8S_CONFIG_RESOLVED="$(tfvar_value k8s_config "$RUNTIME_TFVARS_PATH")"
+fi
+if [ -z "${K8S_CONFIG_RESOLVED:-}" ]; then
+  K8S_CONFIG_RESOLVED="$(tfvar_value k8s_config "$CONFIG_TFVARS_PATH")"
+fi
+if [ -n "${K8S_CONFIG_RESOLVED:-}" ]; then
+  export KUBECONFIG="$K8S_CONFIG_RESOLVED"
+fi
+
+if command -v kubectl >/dev/null 2>&1; then
+  echo "Kubectl context: $(kubectl config current-context 2>/dev/null || echo "<unavailable>")"
+fi
+echo "Target namespace: ${K8S_NAMESPACE:-<empty>}"
+echo "Target deployment: ${APP_NAME:-<empty>}"
+echo "Target service: ${APP_NAME:-<empty>}-service"
+echo "Target pull secret: ${PULL_SECRET_NAME:-<empty>}"
+
+if [ -n "${K8S_NAMESPACE:-}" ]; then
+  import_if_exists "kubernetes_secret.registry[0]" "secret" "$PULL_SECRET_NAME" "$K8S_NAMESPACE" "$K8S_NAMESPACE/$PULL_SECRET_NAME"
+  import_if_exists "kubernetes_deployment_v1.app" "deployment" "$APP_NAME" "$K8S_NAMESPACE" "$K8S_NAMESPACE/$APP_NAME"
+  import_if_exists "kubernetes_service_v1.app" "service" "${APP_NAME}-service" "$K8S_NAMESPACE" "$K8S_NAMESPACE/${APP_NAME}-service"
+fi
+
+if ! terraform -chdir="$TF_WORK_DIR" apply -lock=false -auto-approve tf.plan; then
+  if command -v kubectl >/dev/null 2>&1 && [ -n "${K8S_NAMESPACE:-}" ]; then
+    echo "Apply failed. Current namespace resources:"
+    kubectl -n "$K8S_NAMESPACE" get secret,deploy,svc || true
+  fi
+  exit 1
+fi
 exit 0
