@@ -4,5 +4,32 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# Normalize the deployment tag for sample_cd/bin/aap/build.
+# AAP payload often carries it inside "applications" text instead of env.
+if [ -z "${APPLICATION_INFRA_TAG:-}" ]; then
+  APPLICATION_INFRA_TAG="${application_infra_tag:-${APP_INFRA_TAG:-${APPLICATION_TAG:-${APP_TAG:-${IMAGE_TAG:-}}}}}"
+fi
+
+if [ -z "${APPLICATION_INFRA_TAG:-}" ]; then
+  payload="${APPLICATIONS:-${applications:-${APPLICATION:-${application:-}}}}"
+  PYTHON_BIN=""
+  if command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  fi
+  if [ -n "$payload" ] && [ -n "$PYTHON_BIN" ]; then
+    parsed_tag="$(PAYLOAD="$payload" "$PYTHON_BIN" -c "import os,re; p=os.environ.get('PAYLOAD',''); m=re.search(r\"application_infra_tag\\s*[:=]\\s*['\\\"]?([^'\\\",}\\s]+)\", p); print(m.group(1) if m else '')" 2>/dev/null)"
+    if [ -n "${parsed_tag:-}" ]; then
+      APPLICATION_INFRA_TAG="$parsed_tag"
+    fi
+  fi
+fi
+
+if [ -n "${APPLICATION_INFRA_TAG:-}" ]; then
+  export APPLICATION_INFRA_TAG
+  export APP_TAG="$APPLICATION_INFRA_TAG"
+fi
+
 cd "$REPO_ROOT/sample_cd"
 exec bash "./bin/aap/build"
