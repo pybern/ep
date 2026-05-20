@@ -1,9 +1,4 @@
 #!/bin/bash
-set -euo pipefail
+set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CD_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-TF_WORK_DIR="$CD_ROOT/tf_app"
-
-terraform -chdir="$TF_WORK_DIR" apply -lock=false -auto-approve tf.plan
-exit 0
+terraform apply -auto-approve tf.plan
