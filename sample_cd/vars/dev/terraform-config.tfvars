@@ -3,7 +3,7 @@ k8s_namespace = "toi-compute"
 
 app_name         = "ep-app"
 image_repository = "dpsauatdk01.intra.hkma.gov.hk:8443/tois/REPOSITORY"
-image_tag        = "dev_v0.0.31"
+image_tag        = "dev_v0.0.32"
 
 replicas       = 1
 container_port = 3000
