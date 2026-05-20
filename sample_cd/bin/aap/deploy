@@ -56,6 +56,43 @@ import_if_exists() {
   IMPORT_PERFORMED=true
 }
 
+dump_k8s_diagnostics() {
+  local ns="$1"
+  local app="$2"
+
+  if ! command -v kubectl >/dev/null 2>&1 || [ -z "$ns" ]; then
+    return 0
+  fi
+
+  echo "=== Kubernetes diagnostics (namespace: $ns) ==="
+  kubectl -n "$ns" get deploy,rs,po,svc -o wide || true
+
+  if [ -n "$app" ]; then
+    echo "=== Describe deployment: $app ==="
+    kubectl -n "$ns" describe deployment "$app" || true
+
+    echo "=== ReplicaSets for app=$app ==="
+    kubectl -n "$ns" get rs -l "app=$app" -o wide || true
+
+    local pods
+    pods="$(kubectl -n "$ns" get pods -l "app=$app" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+    if [ -n "$pods" ]; then
+      while IFS= read -r pod; do
+        if [ -z "$pod" ]; then
+          continue
+        fi
+        echo "=== Describe pod: $pod ==="
+        kubectl -n "$ns" describe pod "$pod" || true
+        echo "=== Logs pod: $pod (all containers, tail 200) ==="
+        kubectl -n "$ns" logs "$pod" --all-containers=true --tail=200 || true
+      done <<< "$pods"
+    fi
+  fi
+
+  echo "=== Recent namespace events ==="
+  kubectl -n "$ns" get events --sort-by=.metadata.creationTimestamp || true
+}
+
 K8S_NAMESPACE="$(tfvar_value k8s_namespace "$RUNTIME_TFVARS_PATH")"
 if [ -z "${K8S_NAMESPACE:-}" ]; then
   K8S_NAMESPACE="$(tfvar_value k8s_namespace "$CONFIG_TFVARS_PATH")"
@@ -103,6 +140,7 @@ if ! terraform -chdir="$TF_WORK_DIR" apply -lock=false -auto-approve tf.plan; th
   if command -v kubectl >/dev/null 2>&1 && [ -n "${K8S_NAMESPACE:-}" ]; then
     echo "Apply failed. Current namespace resources:"
     kubectl -n "$K8S_NAMESPACE" get secret,deploy,svc || true
+    dump_k8s_diagnostics "$K8S_NAMESPACE" "${APP_NAME:-}"
   fi
   exit 1
 fi
