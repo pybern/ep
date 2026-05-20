@@ -53,6 +53,7 @@ import_if_exists() {
 
   echo "Importing existing $kind/$name into Terraform state ($addr)"
   terraform -chdir="$TF_WORK_DIR" import -lock=false "$addr" "$id" >/dev/null
+  IMPORT_PERFORMED=true
 }
 
 K8S_NAMESPACE="$(tfvar_value k8s_namespace "$RUNTIME_TFVARS_PATH")"
@@ -86,10 +87,16 @@ echo "Target deployment: ${APP_NAME:-<empty>}"
 echo "Target service: ${APP_NAME:-<empty>}-service"
 echo "Target pull secret: ${PULL_SECRET_NAME:-<empty>}"
 
+IMPORT_PERFORMED=false
 if [ -n "${K8S_NAMESPACE:-}" ]; then
   import_if_exists "kubernetes_secret.registry[0]" "secret" "$PULL_SECRET_NAME" "$K8S_NAMESPACE" "$K8S_NAMESPACE/$PULL_SECRET_NAME"
   import_if_exists "kubernetes_deployment_v1.app" "deployment" "$APP_NAME" "$K8S_NAMESPACE" "$K8S_NAMESPACE/$APP_NAME"
   import_if_exists "kubernetes_service_v1.app" "service" "${APP_NAME}-service" "$K8S_NAMESPACE" "$K8S_NAMESPACE/${APP_NAME}-service"
+fi
+
+if [ "$IMPORT_PERFORMED" = true ]; then
+  echo "State changed by import; regenerating tf.plan before apply..."
+  terraform -chdir="$TF_WORK_DIR" plan -lock=false --out "$TF_WORK_DIR/tf.plan"
 fi
 
 if ! terraform -chdir="$TF_WORK_DIR" apply -lock=false -auto-approve tf.plan; then
