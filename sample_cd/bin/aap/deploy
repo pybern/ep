@@ -1,39 +1,9 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-if [ ! -f tf.plan ]; then
-  echo "Missing tf.plan. Run build step first."
-  exit 1
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CD_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+TF_WORK_DIR="$CD_ROOT/tf_app"
 
-deploy_failed=false
-if ! terraform apply -auto-approve tf.plan; then
-  deploy_failed=true
-fi
-
-if [ "$deploy_failed" = true ]; then
-  NS="$(awk -F'=' '/^[[:space:]]*k8s_namespace[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
-  APP_NAME="$(awk -F'=' '/^[[:space:]]*app_name[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
-  K8S_CONFIG_RESOLVED="$(awk -F'=' '/^[[:space:]]*k8s_config[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-runtime.auto.tfvars" 2>/dev/null || true)"
-  if [ -z "$K8S_CONFIG_RESOLVED" ]; then
-    K8S_CONFIG_RESOLVED="$(awk -F'=' '/^[[:space:]]*k8s_config[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-secret.tfvars" 2>/dev/null || true)"
-  fi
-  if [ -n "$K8S_CONFIG_RESOLVED" ]; then
-    export KUBECONFIG="$K8S_CONFIG_RESOLVED"
-    echo "Using KUBECONFIG for diagnostics: $KUBECONFIG"
-  fi
-  if [ -n "$NS" ]; then
-    echo "=== Kubernetes diagnostics (namespace: $NS) ==="
-    kubectl -n "$NS" get deploy,po,svc || true
-    if [ -n "$APP_NAME" ]; then
-      kubectl -n "$NS" describe deploy "$APP_NAME" || true
-      POD_NAME="$(kubectl -n "$NS" get pods -l "app=$APP_NAME" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-      if [ -n "$POD_NAME" ]; then
-        kubectl -n "$NS" describe pod "$POD_NAME" || true
-        kubectl -n "$NS" logs "$POD_NAME" --all-containers=true --tail=200 || true
-      fi
-    fi
-    kubectl -n "$NS" get events --sort-by=.metadata.creationTimestamp | tail -n 50 || true
-  fi
-  exit 1
-fi
+terraform -chdir="$TF_WORK_DIR" apply -lock=false -auto-approve tf.plan
+exit 0
