@@ -1,20 +1,19 @@
 #!/bin/bash
-set -euo pipefail
+set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CD_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-TF_WORK_DIR="$CD_ROOT/tf_app"
+TERRAFORM_BACKEND_CONFIG_PATH=./terraform-backend-config
 
-TERRAFORM_BACKEND_CONFIG_PATH="$TF_WORK_DIR/terraform-backend-config"
-: > "$TERRAFORM_BACKEND_CONFIG_PATH"
-echo -e "address=\"https://gitlab.intra.hkma.gov.hk/api/v4/projects/$GIT_PROJECT_ID/terraform/state/$ENV_NAME\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
-echo -e "lock_address=\"https://gitlab.intra.hkma.gov.hk/api/v4/projects/$GIT_PROJECT_ID/terraform/state/$ENV_NAME/lock\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
-echo -e "unlock_address=\"https://gitlab.intra.hkma.gov.hk/api/v4/projects/$GIT_PROJECT_ID/terraform/state/$ENV_NAME/lock\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
-echo -e "username=\"$GIT_USERNAME\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
-echo -e "password=\"$GIT_PASSWORD\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
-echo -e "lock_method=\"POST\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
-echo -e "unlock_method=\"DELETE\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
-echo -e "retry_wait_min=\"5\"" >> "$TERRAFORM_BACKEND_CONFIG_PATH"
+cat > $TERRAFORM_BACKEND_CONFIG_PATH <<EOF
+address="https://gitlab.intra.hkma.gov.hk/api/v4/projects/$GIT_PROJECT_ID/terraform/state/$ENV_NAME"
+lock_address="https://gitlab.intra.hkma.gov.hk/api/v4/projects/$GIT_PROJECT_ID/terraform/state/$ENV_NAME/lock"
+unlock_address="https://gitlab.intra.hkma.gov.hk/api/v4/projects/$GIT_PROJECT_ID/terraform/state/$ENV_NAME/lock"
+username="$GIT_USERNAME"
+password="$GIT_PASSWORD"
+lock_method="POST"
+unlock_method="DELETE"
+retry_wait_min="5"
+EOF
 
-terraform -chdir="$TF_WORK_DIR" init -backend-config="$TERRAFORM_BACKEND_CONFIG_PATH" -upgrade
-exit 0
+TERRAFORM_ACTION="init -backend-config=$TERRAFORM_BACKEND_CONFIG_PATH -upgrade"
+
+terraform $TERRAFORM_ACTION
