@@ -1,0 +1,62 @@
+stages:
+  - build_image
+
+build_harbor_image:
+  stage: build_image
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  variables:
+    HARBOR_HOST: "dpsauatdk01.intra.hkma.gov.hk:8443"
+    IMAGE_REPOSITORY: "dpsauatdk01.intra.hkma.gov.hk:8443/tois/tois"
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^dev_v[0-9]+\.[0-9]+\.[0-9]+$/'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  script:
+    - |
+      set -eu
+
+      pick_first() {
+        for key in "$@"; do
+          eval "val=\${$key:-}"
+          if [ -n "$val" ]; then
+            echo "$val"
+            return 0
+          fi
+        done
+        return 1
+      }
+
+      IMAGE_TAG="$(pick_first CI_COMMIT_TAG IMAGE_TAG APPLICATION_INFRA_TAG || true)"
+      if [ -z "${IMAGE_TAG:-}" ]; then
+        echo "Missing image tag. Run with git tag (dev_vX.Y.Z) or set IMAGE_TAG."
+        exit 1
+      fi
+
+      REGISTRY_USER="$(pick_first DOCKER_REGISTRY_USERNAME HARBOR_USERNAME HARBOR_USER REGISTRY_USERNAME || true)"
+      REGISTRY_PASS="$(pick_first DOCKER_REGISTRY_PASSWORD HARBOR_PASSWORD HARBOR_TOKEN REGISTRY_PASSWORD || true)"
+      if [ -z "${REGISTRY_USER:-}" ] || [ -z "${REGISTRY_PASS:-}" ]; then
+        echo "Missing Harbor credentials. Set DOCKER_REGISTRY_USERNAME/DOCKER_REGISTRY_PASSWORD (or HARBOR_*)."
+        exit 1
+      fi
+
+      mkdir -p /kaniko/.docker
+      cat > /kaniko/.docker/config.json <<EOF
+      {
+        "auths": {
+          "${HARBOR_HOST}": {
+            "auth": "$(printf '%s:%s' "$REGISTRY_USER" "$REGISTRY_PASS" | base64 | tr -d '\n')"
+          }
+        }
+      }
+      EOF
+
+      DEST="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+      echo "Building and pushing ${DEST}"
+
+      /kaniko/executor \
+        --context "${CI_PROJECT_DIR}" \
+        --dockerfile "${CI_PROJECT_DIR}/Dockerfile" \
+        --destination "${DEST}" \
+        --snapshot-mode=redo \
+        --use-new-run
