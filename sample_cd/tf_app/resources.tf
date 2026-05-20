@@ -36,6 +36,11 @@ resource "kubernetes_deployment_v1" "app" {
 
   spec {
     replicas = var.replicas
+    progress_deadline_seconds = 300
+
+    strategy {
+      type = "Recreate"
+    }
 
     selector {
       match_labels = local.app_labels
