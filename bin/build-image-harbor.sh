@@ -20,6 +20,19 @@ if [ -z "$REGISTRY_USERNAME" ] || [ -z "$REGISTRY_PASSWORD" ]; then
   exit 1
 fi
 
+BUILDER=""
+if command -v docker >/dev/null 2>&1; then
+  BUILDER="docker"
+elif command -v podman >/dev/null 2>&1; then
+  BUILDER="podman"
+fi
+
+if [ -z "$BUILDER" ]; then
+  echo "No container builder found on this machine (docker/podman)."
+  echo "Build and push the image from a machine/runner that has docker or podman."
+  exit 1
+fi
+
 echo "Installing and building Next.js app..."
 cd "$REPO_ROOT"
 npm ci
@@ -28,17 +41,14 @@ npm run build
 IMAGE_REF="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
 echo "Building and pushing image: $IMAGE_REF"
 
-if command -v docker >/dev/null 2>&1; then
+if [ "$BUILDER" = "docker" ]; then
   docker login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD"
   docker build -t "$IMAGE_REF" "$REPO_ROOT"
   docker push "$IMAGE_REF"
-elif command -v podman >/dev/null 2>&1; then
+elif [ "$BUILDER" = "podman" ]; then
   podman login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD"
   podman build -t "$IMAGE_REF" "$REPO_ROOT"
   podman push "$IMAGE_REF"
-else
-  echo "Need docker or podman on this build machine."
-  exit 1
 fi
 
 echo "Done: $IMAGE_REF"
