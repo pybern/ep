@@ -7,24 +7,126 @@ DYNAMIC_TFVARS_PATH="vars/$ENV_NAME/runtime.auto.tfvars"
 
 APP_IMAGE_TAG_VALUE="${APPLICATION_INFRA_TAG:-${APP_TAG:-${IMAGE_TAG:-}}}"
 
-sh $WORKSPACE/ansible-vault "decrypt" "vars/$ENV_NAME/terraform-secret.tfvars"
-sh $WORKSPACE/ansible-vault "decrypt" "vars/$ENV_NAME/admin_gui_session_conf"
-sh $WORKSPACE/ansible-vault "decrypt" "vars/$ENV_NAME/portal_session_conf"
-sh $WORKSPACE/ansible-vault "decrypt" "vars/$ENV_NAME/admin_gui_auth_conf"
-sh $WORKSPACE/ansible-vault "decrypt" "vars/$ENV_NAME/tls.key"
-sh $WORKSPACE/ansible-vault "decrypt" "vars/$ENV_NAME/ingress.key"
-sh $WORKSPACE/ansible-vault "decrypt" "vars/$ENV_NAME/license.json"
+REGISTRY_HOST="$(pick_first DOCKER_REGISTRY_HOST HARBOR_HOST TARGET_HARBOR_HOST SOURCE_HARBOR_HOST HARBOR_REGISTRY_HOST || true)"
+REGISTRY_USERNAME="$(pick_first DOCKER_REGISTRY_USERNAME HARBOR_USERNAME TARGET_HARBOR_USERNAME SOURCE_HARBOR_USERNAME HARBOR_USER HARBOR_ACCOUNT TARGET_REPOSITORY_USERNAME SOURCE_REPOSITORY_USERNAME REPOSITORY_USERNAME || true)"
+REGISTRY_PASSWORD="$(pick_first DOCKER_REGISTRY_PASSWORD HARBOR_PASSWORD TARGET_HARBOR_PASSWORD SOURCE_HARBOR_PASSWORD HARBOR_TOKEN TARGET_HARBOR_TOKEN SOURCE_HARBOR_TOKEN TARGET_REPOSITORY_PASSWORD SOURCE_REPOSITORY_PASSWORD REPOSITORY_PASSWORD || true)"
+USE_SECRET_TFVARS=false
 
-cat > "$DYNAMIC_TFVARS_PATH" <<EOF
-env_name="$ENV_NAME"
-k8s_config="$K8S_CONFIG_PATH"
-EOF
+required_vars=(
+  ENV_NAME
+)
+for v in "${required_vars[@]}"; do
+  if [ -z "${!v:-}" ]; then
+    echo "Missing required environment variable: $v"
+    exit 1
+  fi
+done
 
-if [ -n "$APP_IMAGE_TAG_VALUE" ]; then
-  echo "app_image_tag=\"$APP_IMAGE_TAG_VALUE\"" >> "$DYNAMIC_TFVARS_PATH"
+if [ -f "$SECRET_TFVARS_PATH" ]; then
+  first_line="$(sed -n '1p' "$SECRET_TFVARS_PATH" || true)"
+  if [[ "$first_line" == \$ANSIBLE_VAULT* ]]; then
+    if [ -n "${ANSIBLE_VAULT_SECRET_PATH:-}" ]; then
+      if sh "$SCRIPT_DIR/ansible-vault" "decrypt" "$SECRET_TFVARS_PATH"; then
+        USE_SECRET_TFVARS=true
+      else
+        echo "Vault decrypt failed; continuing without terraform-secret.tfvars."
+      fi
+    else
+      echo "Skipping encrypted terraform-secret.tfvars (ANSIBLE_VAULT_SECRET_PATH not set)."
+    fi
+  else
+    USE_SECRET_TFVARS=true
+  fi
+else
+  echo "No terraform-secret.tfvars found; continuing without secret tfvars."
 fi
 
-terraform plan --out $TF_PLAN_RAW_PATH -var-file=vars/$ENV_NAME/terraform-config.tfvars -var-file=./vars/$ENV_NAME/terraform-secret.tfvars -var-file="$DYNAMIC_TFVARS_PATH"
-terraform show -json $TF_PLAN_RAW_PATH > $TF_PLAN_JSON_PATH
+if [ -n "${APPLICATION_INFRA_TAG:-}" ]; then
+  IMAGE_TAG="$APPLICATION_INFRA_TAG"
+elif [ -n "${CI_COMMIT_TAG:-}" ]; then
+  IMAGE_TAG="$CI_COMMIT_TAG"
+else
+  IMAGE_TAG="$(git rev-parse --short HEAD)"
+fi
 
-terraform graph -plan=$TF_PLAN_RAW_PATH 
+if [ -n "${DOCKER_IMAGE_REPOSITORY:-}" ]; then
+  IMAGE_REPOSITORY="$DOCKER_IMAGE_REPOSITORY"
+elif [ -n "${HARBOR_IMAGE_REPOSITORY:-}" ]; then
+  IMAGE_REPOSITORY="$HARBOR_IMAGE_REPOSITORY"
+elif [ -n "${TARGET_HARBOR_IMAGE_REPOSITORY:-}" ]; then
+  IMAGE_REPOSITORY="$TARGET_HARBOR_IMAGE_REPOSITORY"
+elif [ -n "${SOURCE_HARBOR_IMAGE_REPOSITORY:-}" ]; then
+  IMAGE_REPOSITORY="$SOURCE_HARBOR_IMAGE_REPOSITORY"
+elif [ -n "${REGISTRY_HOST:-}" ]; then
+  HARBOR_PROJECT_EFFECTIVE="$(pick_first HARBOR_PROJECT TARGET_HARBOR_PROJECT SOURCE_HARBOR_PROJECT || true)"
+  HARBOR_REPOSITORY_EFFECTIVE="$(pick_first HARBOR_REPOSITORY TARGET_HARBOR_REPOSITORY SOURCE_HARBOR_REPOSITORY || true)"
+  if [ -n "${HARBOR_PROJECT_EFFECTIVE:-}" ] && [ -n "${HARBOR_REPOSITORY_EFFECTIVE:-}" ]; then
+    IMAGE_REPOSITORY="${REGISTRY_HOST}/${HARBOR_PROJECT_EFFECTIVE}/${HARBOR_REPOSITORY_EFFECTIVE}"
+  fi
+else
+  IMAGE_REPOSITORY="$(awk -F'=' '/^[[:space:]]*image_repository[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars")"
+fi
+
+if [ -z "${REGISTRY_HOST:-}" ]; then
+  REGISTRY_HOST="$(awk -F'=' '/^[[:space:]]*docker_registry_host[[:space:]]*=/{gsub(/"/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "vars/$ENV_NAME/terraform-config.tfvars" || true)"
+fi
+
+if [ -z "${REGISTRY_HOST:-}" ] && [ -n "${IMAGE_REPOSITORY:-}" ]; then
+  REGISTRY_HOST="${IMAGE_REPOSITORY%%/*}"
+fi
+
+echo "Registry host resolved: ${REGISTRY_HOST:-<empty>}"
+if [ -n "${REGISTRY_USERNAME:-}" ]; then
+  echo "Registry username resolved from environment."
+else
+  echo "Registry username not found in environment."
+fi
+if [ -n "${REGISTRY_PASSWORD:-}" ]; then
+  echo "Registry password resolved from environment."
+else
+  echo "Registry password not found in environment."
+fi
+
+if [ -n "${REGISTRY_HOST:-}" ] && [ -n "${REGISTRY_USERNAME:-}" ] && [ -n "${REGISTRY_PASSWORD:-}" ] && [ -n "$IMAGE_REPOSITORY" ]; then
+  IMAGE_REF="$IMAGE_REPOSITORY:$IMAGE_TAG"
+  echo "Building image $IMAGE_REF"
+  echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" --password-stdin
+  docker build -t "$IMAGE_REF" -f "$REPO_ROOT/Dockerfile" "$REPO_ROOT"
+  docker push "$IMAGE_REF"
+else
+  echo "Skipping docker/harbor build-push (deploy-only mode)."
+fi
+
+: > "$TF_RUNTIME_VARS_PATH"
+echo "env_name=\"$ENV_NAME\"" >> "$TF_RUNTIME_VARS_PATH"
+if [ -n "${K8S_CONFIG_PATH:-}" ]; then
+  echo "k8s_config=\"$K8S_CONFIG_PATH\"" >> "$TF_RUNTIME_VARS_PATH"
+fi
+if [ -n "${IMAGE_REPOSITORY:-}" ]; then
+  echo "image_repository=\"$IMAGE_REPOSITORY\"" >> "$TF_RUNTIME_VARS_PATH"
+fi
+echo "image_tag=\"$IMAGE_TAG\"" >> "$TF_RUNTIME_VARS_PATH"
+if [ -n "${REGISTRY_HOST:-}" ]; then
+  echo "docker_registry_host=\"$REGISTRY_HOST\"" >> "$TF_RUNTIME_VARS_PATH"
+fi
+if [ -n "${REGISTRY_USERNAME:-}" ]; then
+  echo "docker_registry_usr=\"$REGISTRY_USERNAME\"" >> "$TF_RUNTIME_VARS_PATH"
+fi
+if [ -n "${REGISTRY_PASSWORD:-}" ]; then
+  echo "docker_registry_psw=\"$REGISTRY_PASSWORD\"" >> "$TF_RUNTIME_VARS_PATH"
+fi
+if [ -n "${REGISTRY_HOST:-}" ] && [ -n "${REGISTRY_USERNAME:-}" ] && [ -n "${REGISTRY_PASSWORD:-}" ]; then
+  echo "create_image_pull_secret=true" >> "$TF_RUNTIME_VARS_PATH"
+fi
+
+terraform_args=(
+  "-var-file=vars/$ENV_NAME/terraform-config.tfvars"
+  "-var-file=$TF_RUNTIME_VARS_PATH"
+)
+if [ "$USE_SECRET_TFVARS" = true ]; then
+  terraform_args+=("-var-file=$SECRET_TFVARS_PATH")
+fi
+
+terraform plan --out "$TF_PLAN_RAW_PATH" "${terraform_args[@]}"
+terraform show -json "$TF_PLAN_RAW_PATH" > "$TF_PLAN_JSON_PATH"
+terraform graph -plan="$TF_PLAN_RAW_PATH"
