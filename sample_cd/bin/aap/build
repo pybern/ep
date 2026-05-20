@@ -39,6 +39,20 @@ tfvar_value() {
   ' "$file"
 }
 
+payload_tag() {
+  local payload="$1"
+  local py_bin=""
+  if command -v python >/dev/null 2>&1; then
+    py_bin="python"
+  elif command -v python3 >/dev/null 2>&1; then
+    py_bin="python3"
+  fi
+  if [ -z "$py_bin" ] || [ -z "$payload" ]; then
+    return 0
+  fi
+  PAYLOAD="$payload" "$py_bin" -c "import os,re; p=os.environ.get('PAYLOAD',''); m=re.search(r\"application_infra_tag\\s*[:=]\\s*['\\\"]?([^'\\\",}\\s]+)\", p); print(m.group(1) if m else '')" 2>/dev/null
+}
+
 if [ -z "${ENV_NAME:-}" ]; then
   echo "Missing required environment variable: ENV_NAME"
   exit 1
@@ -58,11 +72,20 @@ if [[ "$first_line" == \$ANSIBLE_VAULT* ]]; then
   sh "$SCRIPT_DIR/ansible-vault" decrypt "$SECRET_TFVARS_PATH"
 fi
 
-IMAGE_TAG="$(pick_first APPLICATION_INFRA_TAG application_infra_tag APP_TAG IMAGE_TAG CI_COMMIT_TAG || true)"
+IMAGE_TAG="$(pick_first APPLICATION_INFRA_TAG application_infra_tag APP_INFRA_TAG APPLICATION_TAG APP_TAG IMAGE_TAG CI_COMMIT_TAG || true)"
 if [ -z "${IMAGE_TAG:-}" ]; then
-  echo "Missing image tag. Set APPLICATION_INFRA_TAG (or IMAGE_TAG)."
+  payload="${APPLICATIONS:-${applications:-${APPLICATION:-${application:-}}}}"
+  IMAGE_TAG="$(payload_tag "$payload" || true)"
+fi
+if [ -z "${IMAGE_TAG:-}" ]; then
+  IMAGE_TAG="$(tfvar_value image_tag "$CONFIG_TFVARS_PATH")"
+fi
+if [ -z "${IMAGE_TAG:-}" ]; then
+  echo "Missing image tag. Set application_infra_tag in payload or IMAGE_TAG/APPLICATION_INFRA_TAG."
   exit 1
 fi
+export APPLICATION_INFRA_TAG="$IMAGE_TAG"
+export APP_TAG="$IMAGE_TAG"
 
 IMAGE_REPOSITORY="$(pick_first DOCKER_IMAGE_REPOSITORY HARBOR_IMAGE_REPOSITORY || true)"
 if [ -z "${IMAGE_REPOSITORY:-}" ]; then
