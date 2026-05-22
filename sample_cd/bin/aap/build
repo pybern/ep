@@ -240,7 +240,7 @@ export APP_TAG="$IMAGE_TAG"
 
 IMAGE_REPOSITORY="$(pick_first DOCKER_IMAGE_REPOSITORY HARBOR_IMAGE_REPOSITORY || true)"
 if [ -z "${IMAGE_REPOSITORY:-}" ]; then
-  IMAGE_REPOSITORY="dpsauatdk01.intra.hkma.gov.hk:8443/tois/tois"
+  IMAGE_REPOSITORY="dpsauatdk01.intra.hkma.gov.hk:8443/dockerhub-proxy/syedayanali28/tois:latest"
 fi
 
 REGISTRY_HOST="$(pick_first DOCKER_REGISTRY_HOST HARBOR_HOST || true)"

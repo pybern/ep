@@ -103,7 +103,7 @@ export ANSIBLE_VAULT_SECRET_PATH="<vault-password-file>"
 export DOCKER_REGISTRY_HOST="dpsauatdk01.intra.hkma.gov.hk:8443"
 export DOCKER_REGISTRY_USERNAME="<registry-user>"
 export DOCKER_REGISTRY_PASSWORD="<registry-password>"
-export DOCKER_IMAGE_REPOSITORY="dpsauatdk01.intra.hkma.gov.hk:8443/tois/tois"
+export DOCKER_IMAGE_REPOSITORY="dpsauatdk01.intra.hkma.gov.hk:8443/dockerhub-proxy/syedayanali28/tois:latest"
 ```
 
 Harbor-first equivalent:
@@ -114,7 +114,7 @@ export HARBOR_USERNAME="<harbor-user>"
 export HARBOR_PASSWORD="<harbor-password>"
 export HARBOR_PROJECT="tois"
 export HARBOR_REPOSITORY="tois"
-# or export HARBOR_IMAGE_REPOSITORY="dpsauatdk01.intra.hkma.gov.hk:8443/tois/tois"
+# or export HARBOR_IMAGE_REPOSITORY="dpsauatdk01.intra.hkma.gov.hk:8443/dockerhub-proxy/syedayanali28/tois:latest"
 ```
 
 ## Why Harbor

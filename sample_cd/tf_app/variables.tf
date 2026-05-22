@@ -19,7 +19,7 @@ variable "app_name" {
 
 variable "image_repository" {
   type    = string
-  default = "dpsauatdk01.intra.hkma.gov.hk:8443/tois/tois"
+  default = "dpsauatdk01.intra.hkma.gov.hk:8443/dockerhub-proxy/syedayanali28/tois:latest"
 }
 
 variable "image_tag" {
