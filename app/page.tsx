@@ -1,16 +1,35 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback, useMemo, PointerEvent as ReactPointerEvent } from "react"
+import { useState, useEffect, useCallback, useMemo, PointerEvent as ReactPointerEvent } from "react"
 import { FloatingWidget } from "@/components/floating-widget"
 import { SqlEditor } from "@/components/sql-editor"
 import { DremioCatalog, SelectedCatalogItem } from "@/components/dremio-catalog"
+import { PostgresCatalog } from "@/components/postgres-catalog"
 import { ChatSidebar } from "@/components/chat-sidebar"
 import { useRouter } from "next/navigation"
-import { DremioCredentials, getDremioCredentials } from "@/lib/credential-store"
-import { Database, PanelLeftClose, PanelLeft, MessageSquare, GripVertical, Square, Columns2, RectangleHorizontal, FolderOpen, Sparkles } from "lucide-react"
+import {
+  DremioCredentials,
+  getDremioCredentials,
+  PostgresCredentials,
+  getPostgresCredentials,
+} from "@/lib/credential-store"
+import { Database, PanelLeftClose, PanelLeft, MessageSquare, GripVertical, Square, Columns2, RectangleHorizontal, FolderOpen, Sparkles, BookOpen, Settings, ArrowRight, Leaf, ChevronDown } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/ui/theme-toggle"
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
+
+type DataSourceKind = "dremio" | "postgres"
+const DATA_SOURCE_STORAGE_KEY = "ep_data_source"
 
 // Catalog sidebar view mode presets
 const CATALOG_VIEW_MODES = {
@@ -28,6 +47,8 @@ const CATALOG_DEFAULT_WIDTH = 280
 export default function Page() {
   const router = useRouter()
   const [credentials, setCredentials] = useState<DremioCredentials | null>(null)
+  const [pgCredentials, setPgCredentials] = useState<PostgresCredentials | null>(null)
+  const [dataSource, setDataSource] = useState<DataSourceKind>("dremio")
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [chatSidebarOpen, setChatSidebarOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
@@ -35,13 +56,49 @@ export default function Page() {
   const [catalogWidth, setCatalogWidth] = useState(CATALOG_DEFAULT_WIDTH)
   const [isCatalogResizing, setIsCatalogResizing] = useState(false)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null)
-  const openSettingsRef = useRef<(() => void) | null>(null)
 
-  // Load credentials on mount
+  // Load credentials on mount + subscribe to updates from /settings
   useEffect(() => {
-    const stored = getDremioCredentials()
-    setCredentials(stored)
+    const refresh = () => {
+      setCredentials(getDremioCredentials())
+      setPgCredentials(getPostgresCredentials())
+    }
+    refresh()
+    const saved = typeof window !== "undefined" ? localStorage.getItem(DATA_SOURCE_STORAGE_KEY) : null
+    if (saved === "postgres" || saved === "dremio") setDataSource(saved)
     setIsLoading(false)
+    const onPg = () => refresh()
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "ep_credentials") refresh()
+    }
+    window.addEventListener("postgres-credentials-updated", onPg)
+    window.addEventListener("storage", onStorage)
+    return () => {
+      window.removeEventListener("postgres-credentials-updated", onPg)
+      window.removeEventListener("storage", onStorage)
+    }
+  }, [])
+
+  // Persist the active data source so reloads keep the user's choice.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    localStorage.setItem(DATA_SOURCE_STORAGE_KEY, dataSource)
+  }, [dataSource])
+
+  // If the user has Postgres configured but no Dremio, flip to Postgres on
+  // first load. This makes Postgres-only users land in a working state.
+  useEffect(() => {
+    if (isLoading) return
+    const saved = typeof window !== "undefined" ? localStorage.getItem(DATA_SOURCE_STORAGE_KEY) : null
+    if (saved) return
+    if (!credentials && pgCredentials) setDataSource("postgres")
+  }, [isLoading, credentials, pgCredentials])
+
+  // Switching the data source resets the selection because paths don't share
+  // a namespace between Dremio and Postgres.
+  const handleDataSourceChange = useCallback((next: DataSourceKind) => {
+    setDataSource(next)
+    setSelectedCatalogItems([])
   }, [])
 
   // Determine current catalog view mode based on width
@@ -84,9 +141,12 @@ export default function Page() {
     setCredentials(creds)
   }, [])
 
-  const handleOpenSettings = useCallback(() => {
-    openSettingsRef.current?.()
-  }, [])
+  const handleOpenSettings = useCallback(
+    (focus?: "dremio" | "ai" | "postgres") => {
+      router.push(focus ? `/settings?tab=setup&focus=${focus}` : "/settings")
+    },
+    [router],
+  )
 
   const handleToggleChatSidebar = useCallback(() => {
     setChatSidebarOpen(prev => !prev)
@@ -130,16 +190,8 @@ export default function Page() {
       >
         {sidebarOpen && (
           <>
-            <DremioCatalog 
-              credentials={credentials} 
-              onTableSelect={handleTableSelect}
-              onOpenSettings={handleOpenSettings}
-              selectionEnabled={true}
-              selectedItems={selectedCatalogItems}
-              onSelectionChange={handleSelectionChange}
-              activeWorkspaceId={activeWorkspaceId}
-              onWorkspaceChange={setActiveWorkspaceId}
-              viewModeControls={
+            {(() => {
+              const viewModeControls = (
                 <div className="flex items-center gap-0.5 bg-accent/30 rounded-md p-0.5">
                   {(Object.entries(CATALOG_VIEW_MODES) as [CatalogViewMode, typeof CATALOG_VIEW_MODES[CatalogViewMode]][]).map(([mode, config]) => {
                     const Icon = config.icon
@@ -150,9 +202,9 @@ export default function Page() {
                         onClick={() => setCatalogViewMode(mode)}
                         className={cn(
                           "p-1 rounded transition-colors",
-                          isActive 
-                            ? "bg-background text-foreground shadow-sm" 
-                            : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                          isActive
+                            ? "bg-background text-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
                         )}
                         title={`${config.label} view (${config.width}px)`}
                       >
@@ -161,8 +213,33 @@ export default function Page() {
                     )
                   })}
                 </div>
-              }
-            />
+              )
+              return dataSource === "postgres" ? (
+                <PostgresCatalog
+                  credentials={pgCredentials}
+                  onTableSelect={handleTableSelect}
+                  onOpenSettings={() => handleOpenSettings("postgres")}
+                  selectionEnabled={true}
+                  selectedItems={selectedCatalogItems}
+                  onSelectionChange={handleSelectionChange}
+                  activeWorkspaceId={activeWorkspaceId}
+                  onWorkspaceChange={setActiveWorkspaceId}
+                  viewModeControls={viewModeControls}
+                />
+              ) : (
+                <DremioCatalog
+                  credentials={credentials}
+                  onTableSelect={handleTableSelect}
+                  onOpenSettings={() => handleOpenSettings("dremio")}
+                  selectionEnabled={true}
+                  selectedItems={selectedCatalogItems}
+                  onSelectionChange={handleSelectionChange}
+                  activeWorkspaceId={activeWorkspaceId}
+                  onWorkspaceChange={setActiveWorkspaceId}
+                  viewModeControls={viewModeControls}
+                />
+              )
+            })()}
 
             {/* Resize Handle */}
             <div
@@ -211,6 +288,61 @@ export default function Page() {
             <span className="text-xs text-muted-foreground">SQL Workbench</span>
           </div>
 
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1.5 ml-2"
+                title="Switch data source"
+              >
+                {dataSource === "postgres" ? (
+                  <Leaf className="h-3 w-3 text-emerald-500" />
+                ) : (
+                  <Database className="h-3 w-3 text-primary" />
+                )}
+                <span className="font-medium capitalize">{dataSource}</span>
+                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-64">
+              <DropdownMenuLabel>Data source</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuRadioGroup
+                value={dataSource}
+                onValueChange={(v) => handleDataSourceChange(v as DataSourceKind)}
+              >
+                <DropdownMenuRadioItem value="dremio" disabled={!credentials}>
+                  <Database className="h-3.5 w-3.5 mr-2 text-primary" />
+                  <div className="flex-1">
+                    <div className="text-xs font-medium">Dremio</div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {credentials ? credentials.endpoint : "Not configured"}
+                    </div>
+                  </div>
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="postgres" disabled={!pgCredentials}>
+                  <Leaf className="h-3.5 w-3.5 mr-2 text-emerald-500" />
+                  <div className="flex-1">
+                    <div className="text-xs font-medium">Postgres</div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {pgCredentials
+                        ? pgCredentials.mode === "connectionString"
+                          ? "Connection string"
+                          : `${pgCredentials.user ?? ""}@${pgCredentials.host ?? ""}`
+                        : "Not configured"}
+                    </div>
+                  </div>
+                </DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => handleOpenSettings(dataSource === "postgres" ? "postgres" : "dremio")}>
+                <Settings className="h-3.5 w-3.5 mr-2" />
+                <span className="text-xs">Configure sources...</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           <div className="flex-1" />
 
           <Button
@@ -233,24 +365,73 @@ export default function Page() {
             Workspaces
           </Button>
 
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs gap-1.5"
+            onClick={() => router.push("/knowledge")}
+          >
+            <BookOpen className="h-3 w-3" />
+            Knowledge
+          </Button>
+
           <div className="h-4 w-px bg-border/50" />
 
-          {credentials ? (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
-              <span className="truncate max-w-[200px]">{credentials.endpoint}</span>
-            </div>
-          ) : (
-            <Button 
-              variant="outline" 
-              size="sm" 
-              className="h-7 text-xs gap-1.5"
-              onClick={handleOpenSettings}
+          {dataSource === "dremio" ? (
+            credentials ? (
+              <button
+                onClick={() => handleOpenSettings("dremio")}
+                className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground"
+                title="Manage Dremio credentials"
+              >
+                <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
+                <span className="truncate max-w-[200px]">{credentials.endpoint}</span>
+              </button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1.5"
+                onClick={() => handleOpenSettings("dremio")}
+              >
+                <Database className="h-3 w-3" />
+                Configure Dremio
+              </Button>
+            )
+          ) : pgCredentials ? (
+            <button
+              onClick={() => handleOpenSettings("postgres")}
+              className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground"
+              title="Manage Postgres credentials"
             >
-              <Database className="h-3 w-3" />
-              Configure Dremio
+              <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
+              <span className="truncate max-w-[220px]">
+                {pgCredentials.mode === "connectionString"
+                  ? "postgres://..."
+                  : `${pgCredentials.user ?? ""}@${pgCredentials.host ?? ""}:${pgCredentials.port ?? 5432}/${pgCredentials.database ?? ""}`}
+              </span>
+            </button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs gap-1.5"
+              onClick={() => handleOpenSettings("postgres")}
+            >
+              <Leaf className="h-3 w-3 text-emerald-500" />
+              Configure Postgres
             </Button>
           )}
+
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => handleOpenSettings()}
+            title="Settings"
+          >
+            <Settings className="h-4 w-4" />
+          </Button>
 
           <Button
             variant="ghost"
@@ -267,28 +448,45 @@ export default function Page() {
 
         {/* SQL Editor */}
         <div className="flex-1 min-h-0">
-          <SqlEditor 
-            credentials={credentials} 
+          <SqlEditor
+            driver={
+              dataSource === "postgres"
+                ? { kind: "postgres", credentials: pgCredentials }
+                : { kind: "dremio", credentials }
+            }
             onInsertTable={handleTableSelect}
           />
         </div>
       </div>
 
+      {/* First-run onboarding nudge - only when NOTHING is configured */}
+      {!credentials && !pgCredentials && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <Button
+            onClick={() => handleOpenSettings("dremio")}
+            className="shadow-lg gap-2"
+          >
+            <Sparkles className="h-4 w-4" />
+            Finish setup
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      )}
+
       {/* Chat Sidebar */}
-      <ChatSidebar 
+      <ChatSidebar
         isOpen={chatSidebarOpen}
         onToggle={handleToggleChatSidebar}
-        onOpenSettings={handleOpenSettings}
+        onOpenSettings={() => handleOpenSettings("ai")}
         dremioCredentials={credentials}
         selectedCatalogItems={selectedCatalogItems}
         onWorkspaceChange={setActiveWorkspaceId}
+        dialect={dataSource}
       />
 
-      {/* Floating Widget */}
-      <FloatingWidget 
-        onCredentialsChange={handleCredentialsChange}
-        openSettingsRef={openSettingsRef}
-      />
+      {/* Floating Widget - retained as an ad-hoc ⚡ tester for power users.
+          Credentials management now lives in /settings. */}
+      <FloatingWidget onCredentialsChange={handleCredentialsChange} />
     </main>
   )
 }

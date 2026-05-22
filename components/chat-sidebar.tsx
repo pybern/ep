@@ -199,15 +199,22 @@ interface ChatSidebarProps {
   selectedCatalogItems?: SelectedCatalogItem[]
   /** Callback when active workspace changes */
   onWorkspaceChange?: (workspaceId: string | null) => void
+  /**
+   * Which backend the user's selected items belong to. Forwarded to the
+   * chat API as a `dialect` hint so the built-in system prompt uses the
+   * right SQL flavour terminology (e.g. PostgreSQL vs Dremio).
+   */
+  dialect?: "dremio" | "postgres"
 }
 
-export function ChatSidebar({ 
-  isOpen, 
-  onToggle, 
-  onOpenSettings, 
+export function ChatSidebar({
+  isOpen,
+  onToggle,
+  onOpenSettings,
   dremioCredentials,
   selectedCatalogItems = [],
   onWorkspaceChange,
+  dialect = "dremio",
 }: ChatSidebarProps) {
   const [credentials, setCredentials] = useState<OpenAICredentials | null>(null)
   const [isCredentialsLoading, setIsCredentialsLoading] = useState(true)
@@ -244,6 +251,10 @@ export function ChatSidebar({
   // Refs to hold latest values - these are read at send-time to ensure freshness
   const credentialsRef = useRef<OpenAICredentials | null>(null)
   const dataContextRef = useRef<DataContext | undefined>(undefined)
+  const dialectRef = useRef<"dremio" | "postgres">(dialect)
+  useEffect(() => {
+    dialectRef.current = dialect
+  }, [dialect])
 
   // Handle resize drag
   const handleResizeStart = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
@@ -457,6 +468,8 @@ export function ChatSidebar({
           apiKey: currentCreds?.apiKey,
           model: currentCreds?.model,
           skipSslVerify: currentCreds?.sslVerify === false,
+          systemPrompt: currentCreds?.systemPrompt,
+          dialect: dialectRef.current,
           dataContext: currentContext,
         }
       },

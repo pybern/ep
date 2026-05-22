@@ -79,10 +79,22 @@ function formatTableForPrompt(table: TableContext): string {
 }
 
 /**
- * Build a comprehensive system prompt for the SQL assistant with schema context
+ * Build a comprehensive system prompt for the SQL assistant with schema context.
+ *
+ * Precedence:
+ *   1. `customSystemPrompt` (from user-provided settings) wins as the primary
+ *      instruction block when non-empty. Schema context is still appended.
+ *   2. Otherwise, we use the built-in SQL-assistant prompt below.
  */
-function buildSystemPrompt(dataContext?: DataContext): string {
-  const basePrompt = `You are an expert SQL assistant specialized in helping users discover data and build queries for Dremio. You have deep knowledge of SQL syntax, query optimization, and data analysis best practices.
+function buildSystemPrompt(
+  dataContext?: DataContext,
+  customSystemPrompt?: string,
+  dialect?: "dremio" | "postgres" | string,
+): string {
+  const dialectLabel = dialect === "postgres" ? "PostgreSQL" : dialect === "dremio" ? "Dremio" : "SQL"
+  const basePrompt = (customSystemPrompt && customSystemPrompt.trim())
+    ? customSystemPrompt.trim()
+    : `You are an expert SQL assistant specialized in helping users discover data and build queries for ${dialectLabel}. You have deep knowledge of SQL syntax, query optimization, and data analysis best practices.
 
 Your primary capabilities:
 1. **Data Discovery**: Describe available tables, columns, and their data types to help users understand their data
@@ -201,7 +213,7 @@ The user has selected the following items for context. Use this information to w
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const { messages, baseUrl, apiKey, model, skipSslVerify, dataContext } = body
+    const { messages, baseUrl, apiKey, model, skipSslVerify, dataContext, systemPrompt: userSystemPrompt, dialect } = body
 
     if (!baseUrl || !apiKey || !model) {
       return new Response(
@@ -220,8 +232,12 @@ export async function POST(req: Request) {
     // Convert messages from UI format (with parts) to model format (with content)
     const modelMessages = await convertToModelMessages(messages as UIMessage[])
     
-    // Build the system prompt with data context
-    const systemPrompt = buildSystemPrompt(dataContext as DataContext | undefined)
+    // Build the system prompt with data context + optional user-provided instructions
+    const systemPrompt = buildSystemPrompt(
+      dataContext as DataContext | undefined,
+      typeof userSystemPrompt === "string" ? userSystemPrompt : undefined,
+      typeof dialect === "string" ? dialect : undefined,
+    )
     
     // Log context info for debugging - detailed logging to verify data transmission
     const tableCount = dataContext?.tables?.length || 0

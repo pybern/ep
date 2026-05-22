@@ -4,10 +4,24 @@ import { useState, useCallback, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Play, Loader2, Table, Download, Copy, Check } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { DremioCredentials } from "@/lib/credential-store"
+import type { DremioCredentials, PostgresCredentials } from "@/lib/credential-store"
+
+/**
+ * SQL editor driver. Discriminated union so we can route the same editor to
+ * either the Dremio jobs API or a direct Postgres query.
+ */
+export type SqlDriver =
+  | { kind: "dremio"; credentials: DremioCredentials | null }
+  | { kind: "postgres"; credentials: PostgresCredentials | null }
 
 interface SqlEditorProps {
-  credentials: DremioCredentials | null
+  /** New: a driver describing which backend to run against. */
+  driver?: SqlDriver
+  /**
+   * Back-compat: if only `credentials` is provided, it's treated as a Dremio
+   * driver. Existing callers (the workbench) can keep working unchanged.
+   */
+  credentials?: DremioCredentials | null
   onInsertTable?: (tablePath: string) => void
 }
 
@@ -18,6 +32,42 @@ interface QueryResult {
   rows?: Record<string, unknown>[]
   error?: string
   details?: string
+}
+
+/**
+ * Minimal Postgres OID -> type name mapping so the result table header shows
+ * something readable ("text", "int4", "timestamptz", ...) rather than a raw
+ * integer. We don't need the full pg_type catalogue here; common types cover
+ * 95% of real-world queries.
+ */
+const PG_TYPE_NAMES: Record<number, string> = {
+  16: "bool",
+  17: "bytea",
+  18: "char",
+  19: "name",
+  20: "int8",
+  21: "int2",
+  23: "int4",
+  25: "text",
+  26: "oid",
+  114: "json",
+  199: "json[]",
+  700: "float4",
+  701: "float8",
+  1042: "bpchar",
+  1043: "varchar",
+  1082: "date",
+  1083: "time",
+  1114: "timestamp",
+  1184: "timestamptz",
+  1186: "interval",
+  1266: "timetz",
+  1700: "numeric",
+  2950: "uuid",
+  3802: "jsonb",
+}
+function pgOidTypeName(oid: number): string {
+  return PG_TYPE_NAMES[oid] ?? `oid:${oid}`
 }
 
 // SQL keywords for syntax highlighting
@@ -66,7 +116,13 @@ function highlightSQL(sql: string): string {
   return highlighted
 }
 
-export function SqlEditor({ credentials, onInsertTable }: SqlEditorProps) {
+export function SqlEditor({ driver, credentials, onInsertTable }: SqlEditorProps) {
+  // Normalise the driver: accept both the new discriminated-union prop and
+  // the legacy `credentials` prop (treated as Dremio).
+  const activeDriver: SqlDriver = driver ?? { kind: "dremio", credentials: credentials ?? null }
+  const hasCredentials =
+    activeDriver.kind === "dremio" ? !!activeDriver.credentials : !!activeDriver.credentials
+
   const [sql, setSql] = useState("SELECT * FROM")
   const [isExecuting, setIsExecuting] = useState(false)
   const [result, setResult] = useState<QueryResult | null>(null)
@@ -90,40 +146,84 @@ export function SqlEditor({ credentials, onInsertTable }: SqlEditorProps) {
   }, [onInsertTable])
 
   const executeQuery = async () => {
-    if (!credentials || !sql.trim()) return
+    if (!hasCredentials || !sql.trim()) return
 
     setIsExecuting(true)
     setResult(null)
 
     try {
-      const response = await fetch("/api/dremio/sql", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          endpoint: credentials.endpoint,
-          pat: credentials.pat,
-          sql: sql.trim(),
-          sslVerify: credentials.sslVerify
+      if (activeDriver.kind === "dremio") {
+        const c = activeDriver.credentials!
+        const response = await fetch("/api/dremio/sql", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            endpoint: c.endpoint,
+            pat: c.pat,
+            sql: sql.trim(),
+            sslVerify: c.sslVerify,
+          }),
         })
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        setResult({
-          jobId: "",
-          rowCount: 0,
-          error: data.error,
-          details: data.details
-        })
+        const data = await response.json()
+        if (!response.ok) {
+          setResult({ jobId: "", rowCount: 0, error: data.error, details: data.details })
+        } else {
+          setResult(data)
+        }
       } else {
-        setResult(data)
+        // Postgres driver: translate /api/postgres/sql response (rowMode: "array")
+        // to the QueryResult shape the editor already renders.
+        const c = activeDriver.credentials!
+        const response = await fetch("/api/postgres/sql", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: c.mode,
+            connectionString: c.connectionString,
+            host: c.host,
+            port: c.port,
+            database: c.database,
+            user: c.user,
+            password: c.password,
+            sslMode: c.sslMode,
+            sql: sql.trim(),
+          }),
+        })
+        const data = await response.json()
+        if (!response.ok || data.ok === false) {
+          setResult({
+            jobId: "",
+            rowCount: 0,
+            error: data.error ?? `HTTP ${response.status}`,
+          })
+        } else {
+          type Field = { name: string; dataTypeID: number }
+          const fields = (data.fields ?? []) as Field[]
+          const arrayRows = (data.rows ?? []) as unknown[][]
+          const schema = fields.map((f) => ({ name: f.name, type: { name: pgOidTypeName(f.dataTypeID) } }))
+          const rows = arrayRows.map((arr) => {
+            const obj: Record<string, unknown> = {}
+            fields.forEach((f, i) => {
+              obj[f.name] = arr[i]
+            })
+            return obj
+          })
+          setResult({
+            jobId: "",
+            rowCount: data.rowCount ?? rows.length,
+            schema,
+            rows,
+            details: data.truncated
+              ? `Row set truncated to ${data.returned} rows (of ${data.rowCount}).`
+              : undefined,
+          })
+        }
       }
     } catch (error) {
       setResult({
         jobId: "",
         rowCount: 0,
-        error: error instanceof Error ? error.message : "Unknown error"
+        error: error instanceof Error ? error.message : "Unknown error",
       })
     } finally {
       setIsExecuting(false)
@@ -238,12 +338,14 @@ export function SqlEditor({ credentials, onInsertTable }: SqlEditorProps) {
           </div>
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted-foreground">
-              {credentials ? "⌘/Ctrl + Enter to run" : "Configure credentials to run"}
+              {hasCredentials
+                ? `⌘/Ctrl + Enter to run · ${activeDriver.kind === "postgres" ? "Postgres" : "Dremio"}`
+                : "Configure credentials to run"}
             </span>
             <Button
               size="sm"
               onClick={executeQuery}
-              disabled={isExecuting || !credentials || !sql.trim()}
+              disabled={isExecuting || !hasCredentials || !sql.trim()}
               className="h-7 gap-1.5"
             >
               {isExecuting ? (

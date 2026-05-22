@@ -1,6 +1,22 @@
 # Endpoint Connection Tester
 
-A comprehensive tool for testing API endpoints and OpenAI-compatible APIs with support for both client-side and server-side request modes.
+A comprehensive tool for testing API endpoints and OpenAI-compatible APIs with support for both client-side and server-side request modes. Now includes a first-class **Postgres connection tester** and a full **knowledge-retrieval pipeline** built on top of `pgvector` + Postgres FTS.
+
+> Looking for the new pieces? Jump to [Configuration (/settings)](#configuration-settings), [Postgres Integration](#postgres-integration), or [Knowledge Retrieval](#knowledge-retrieval-rag-with-pgvector).
+
+## Configuration (`/settings`)
+
+All credentials are configured through a dedicated **`/settings`** page — the canonical entry point for the user journey.
+
+- **Guided setup** — three stacked step cards (Dremio → AI provider → Postgres + Embeddings). Each card shows status, hosts the form + inline **Test** + **Save**, and reveals a **Next** button once green.
+- **Model selector** — the AI provider step ships a combobox that auto-fetches the provider's `/v1/models` catalogue (via `/api/openai/test`), shows suggested defaults, and still accepts free-form model ids for gateways that don't expose a catalogue. The list is cached per (baseUrl + urlMode + key-prefix) so switching providers invalidates it automatically.
+- **System instructions** — an optional textarea lets users override the built-in SQL-assistant system prompt. Presets are provided (Concise data analyst, Teaching mode, Read-only safety); leaving it empty falls back to the default. The prompt is persisted in `localStorage` alongside the rest of the AI credentials and forwarded to every chat request (`/api/chat`, `/api/chatbot`). Data-context schema is still appended automatically.
+- **Deep links** — open specific sections with `/settings?tab=setup&focus=dremio|ai|postgres`. The workbench header, catalog empty-state, chat sidebar, and knowledge page all link here.
+- **Advanced testers** — a second tab exposes the raw API / JDBC / ODBC / OpenAI / ADFS / Postgres connection testers (plus the rolling test history) for ad-hoc probing.
+- **Progress bar** — a top-level status card shows how many integrations are configured and which one is next.
+- **First-run nudge** — when no Dremio credentials are detected on the workbench a pinned "Finish setup" button guides the user straight to the first step.
+
+The floating ⚡ widget remains as a quick-access ad-hoc tester (with a "Settings" link back to the full page), but credential editing has moved into `/settings`.
 
 ## Features
 
@@ -180,6 +196,88 @@ npm run build
 # Start production server
 npm start
 ```
+
+## Postgres Integration
+
+Postgres is a first-class **data source** in the workbench, a peer to Dremio. The header carries a source switcher; picking Postgres replaces the Dremio catalog sidebar with a Postgres schema/table/column browser and routes the SQL editor to `/api/postgres/sql` (plain PostgreSQL with 60 s statement timeout + row cap). Selections from either source flow into the AI chat context the same way; the chat API receives a `dialect` hint so its built-in system prompt says "PostgreSQL" instead of "Dremio" when appropriate.
+
+The **Postgres** tab in the Connection Tester (and the Postgres section inside Settings) adds a fully-featured alternative to the Dremio catalog. It is BYO-cloud — paste a connection string for any Postgres-compatible service and the credentials stay in `localStorage`.
+
+### Supported providers
+
+| Provider | What to paste | TLS |
+|----------|--------------|-----|
+| PlanetScale (Postgres) | `postgres://<user>:<pw>@<host>/<db>?sslmode=require` | Require |
+| Neon | Pooled connection string from the Neon dashboard | Require |
+| Supabase | Transaction-mode pooler URL | Require |
+| RDS / Cloud SQL / self-hosted | Host / port / db / user / password fields | Require / No-verify / Disable |
+
+The tester calls `POST /api/postgres/test` which returns:
+
+- Server `version`, `current_database`, `current_user`
+- Installed / available extensions (`vector`, `pg_trgm`, `pgcrypto`)
+- A list of non-system schemas
+
+Other Postgres routes:
+
+| Route | Purpose |
+|-------|---------|
+| `POST /api/postgres/catalog` | Progressive schema → table → column → preview browsing (replaces Dremio catalog for PG) |
+| `POST /api/postgres/sql` | Arbitrary SQL execution with 60s statement timeout and row cap |
+| `POST /api/postgres/setup` | One-click provisioning of pgvector, `kb_documents`, `kb_chunks` and all indexes |
+
+Each request is handled by a short-lived `pg.Pool` (lib/postgres.ts) so the server stays stateless across deploys and immediately releases resources when the user changes credentials.
+
+---
+
+## Knowledge Retrieval (RAG with pgvector)
+
+The `/knowledge` page adds a production-grade RAG surface on top of whichever Postgres you connected above.
+
+### Pipeline
+
+1. **Setup** (`/api/postgres/setup`)  
+   Creates `vector`, `pg_trgm`, `pgcrypto` extensions, `kb_documents` / `kb_chunks` tables, and three indexes:
+   - **HNSW** on `embedding vector_cosine_ops` (pgvector ≥ 0.5) — ANN search, no training step.
+   - **GIN** on a generated `content_tsv` column (`to_tsvector('english', content)`) — lexical / FTS.
+   - **GIN trigram** on `content` for fuzzy fallback.
+
+2. **Ingest** (`/api/knowledge/upload`)  
+   Multipart upload. Files are:
+   - Decoded as UTF-8 (text, Markdown, JSON, CSV, code).
+   - Chunked with a recursive splitter (paragraphs → sentences) with configurable overlap (defaults: 1200 chars / 150 overlap).
+   - Embedded via any OpenAI-compatible `/v1/embeddings` endpoint (OpenAI, Azure, vLLM, Ollama, MaaS). Dimensions are configurable at setup time (768 / 1024 / 1536 / 3072).
+   - Persisted in a single transaction; re-uploading the same `(title, source)` replaces existing chunks so you can re-ingest after edits.
+
+3. **Retrieve** (`/api/knowledge/search`)  
+   Three modes:
+   - `vector` — cosine similarity on HNSW index
+   - `fts` — `websearch_to_tsquery` + `ts_rank_cd` with `ts_headline` snippets
+   - `hybrid` (default) — runs both retrievers in parallel and **fuses with Reciprocal Rank Fusion** (k=60). RRF is the current best-practice fusion for dense + sparse without per-corpus tuning: `score(d) = Σ 1 / (k + rank_r(d))`. It is model-agnostic and consistently beats linear score combination on BEIR / TREC-DL.
+
+4. **Manage** (`/api/knowledge/documents`)  
+   List & delete documents (cascade).
+
+### Why these choices?
+
+| Choice | Why |
+|--------|-----|
+| Postgres + pgvector | Single-store RAG avoids sync drift between a vector DB and the operational DB; PlanetScale/Neon/Supabase all now ship pgvector. |
+| HNSW index | No training step, better recall/latency tradeoff than IVFFlat for <10M rows. |
+| Generated `tsvector` column | Keeps FTS always in sync with `content` without triggers. |
+| RRF fusion | Robust default — no score calibration needed between retrievers. |
+| Per-request `Pool` | Stateless server; immediately reflects credential changes from the browser. |
+| Recursive splitter with overlap | Preserves paragraph / sentence boundaries; overlap avoids retrieval cliff at chunk edges. |
+
+### Recommended upgrades (future work)
+
+- **Cross-encoder re-ranker** as a final stage (e.g. `bge-reranker-v2-m3`, Cohere Rerank v3) over the top 20–40 RRF candidates — typically +15–25% nDCG@10.
+- **Query rewriting / HyDE** for very short queries; generate a hypothetical answer with the chat model and embed that.
+- **Matryoshka / truncated embeddings** — `text-embedding-3-*` supports the `dimensions` parameter so you can drop to 768 for 2× smaller indexes with <1% recall loss.
+- **Chunk-level metadata filters** via `jsonb` `metadata` columns and `@>` queries.
+- **SPLADE / sparse vectors** as a third retriever — pgvector ≥ 0.7 supports sparse vectors natively.
+
+---
 
 ## Docker
 
