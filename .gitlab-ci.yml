@@ -8,7 +8,7 @@ build_harbor_image:
     entrypoint: [""]
   variables:
     HARBOR_HOST: "dpsauatdk01.intra.hkma.gov.hk:8443"
-    IMAGE_REPOSITORY: "dpsauatdk01.intra.hkma.gov.hk:8443/tois/tois"
+    IMAGE_REPOSITORY: "dpsauatdk01.intra.hkma.gov.hk:8443/dockerhub-proxy/syedayanali28/tois:latest"
   rules:
     - if: '$CI_COMMIT_TAG =~ /^dev_v[0-9]+\.[0-9]+\.[0-9]+$/'
     - if: '$CI_PIPELINE_SOURCE == "web"'

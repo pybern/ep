@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 REGISTRY_HOST="${REGISTRY_HOST:-dpsauatdk01.intra.hkma.gov.hk:8443}"
-IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-$REGISTRY_HOST/tois/tois}"
+IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-$REGISTRY_HOST/dockerhub-proxy/syedayanali28/tois:latest}"
 IMAGE_TAG="${IMAGE_TAG:-}"
 REGISTRY_USERNAME="${REGISTRY_USERNAME:-}"
 REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-}"
