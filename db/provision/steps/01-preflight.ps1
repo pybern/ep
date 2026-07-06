@@ -13,7 +13,7 @@
 [CmdletBinding()]
 param(
     [string]$PgVersion = "17",
-    [string]$DataDir = "C:\pgdata",
+    [string]$DataDir = "C:\ep\pgdata",
     [int]$Port = 5432,
     [string]$InstallerPath,
     [string]$SchemaFile,
@@ -31,7 +31,7 @@ try {
 
     $dataDrive = Split-Path -Qualifier $DataDir
     if (-not (Test-Path $dataDrive)) {
-        throw "Drive '$dataDrive' for -DataDir '$DataDir' does not exist. Pass a -DataDir on an existing drive (default: C:\pgdata), or attach/format the disk first."
+        throw "Drive '$dataDrive' for -DataDir '$DataDir' does not exist. Pass a -DataDir on an existing drive (default: C:\ep\pgdata), or attach/format the disk first."
     }
 
     if ($SchemaFile -and -not (Test-Path $SchemaFile)) {

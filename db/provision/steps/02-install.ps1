@@ -17,7 +17,7 @@ param(
     # without needing the installer at all.
     [string]$InstallerPath,
     [string]$PgVersion = "17",
-    [string]$DataDir = "C:\pgdata",
+    [string]$DataDir = "C:\ep\pgdata",
     [int]$Port = 5432,
     [Parameter(Mandatory = $true)][string]$SuperPassword
 )

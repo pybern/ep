@@ -17,7 +17,7 @@
 [CmdletBinding()]
 param(
     [string]$PgVersion = "17",
-    [string]$DataDir = "C:\pgdata",
+    [string]$DataDir = "C:\ep\pgdata",
     [int]$Port = 5432,
     [Parameter(Mandatory = $true)][string]$SuperPassword,
     [string]$SslCertPath,

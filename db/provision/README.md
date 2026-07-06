@@ -82,26 +82,31 @@ Move the artifacts to the VM using whatever your environment allows:
 - **Internal file share** — copy to an SMB share the VM can reach, or
 - **Approved removable media**, following your organization's process.
 
-Suggested layout on the VM:
+Layout on the VM — everything for this project lives under the `C:\ep`
+project directory (the provisioning defaults for data and backups point
+there too):
 
 ```
-C:\temp\pg-setup\
-├── postgresql-17.5-1-windows-x64.exe
-├── provision\                      <- the db/provision folder
-│   ├── provision-postgres.ps1
-│   ├── schema.sql
-│   ├── backup-postgres.ps1
-│   ├── lib\...
-│   └── steps\...
-└── certs\                          <- optional (A3)
-    ├── server.crt
-    └── server.key
+C:\ep\
+├── setup\                          <- staging area for the artifacts
+│   ├── postgresql-17.5-1-windows-x64.exe
+│   ├── provision\                  <- the db/provision folder
+│   │   ├── provision-postgres.ps1
+│   │   ├── schema.sql
+│   │   ├── backup-postgres.ps1
+│   │   ├── lib\...
+│   │   └── steps\...
+│   └── certs\                      <- optional (A3)
+│       ├── server.crt
+│       └── server.key
+├── pgdata\                         <- created by provisioning (data dir)
+└── pgbackups\                      <- created by provisioning (backups)
 ```
 
 ### A5. Verify the installer checksum on the VM
 
 ```powershell
-Get-FileHash C:\temp\pg-setup\postgresql-17.5-1-windows-x64.exe -Algorithm SHA256
+Get-FileHash C:\ep\setup\postgresql-17.5-1-windows-x64.exe -Algorithm SHA256
 # compare with the hash recorded in A1
 ```
 
@@ -113,10 +118,12 @@ All commands below run in an **elevated (Administrator) PowerShell session**.
 
 ### B1. Pre-checks
 
-- Everything lives on the `C:` drive: the PostgreSQL installation goes to
-  `C:\Program Files\PostgreSQL\<version>` (EDB default), the data directory
-  defaults to `C:\pgdata`, and backups to `C:\pgbackups`. If a dedicated
-  data disk is ever attached, override with `-DataDir` / `-BackupDir`.
+- Everything the project owns lives under a single project directory,
+  **`C:\ep`**: setup artifacts in `C:\ep\setup`, the data directory defaults
+  to `C:\ep\pgdata`, and backups to `C:\ep\pgbackups`. Only the PostgreSQL
+  binaries live outside it, in `C:\Program Files\PostgreSQL\<version>`
+  (EDB installer default). If a dedicated data disk is ever attached,
+  override with `-DataDir` / `-BackupDir`.
 - Ensure `C:` has enough free space for the installation, data, and
   backups (installer ~1 GB installed, plus data growth and 14 days of dumps).
 - Decide two strong passwords: one for the `postgres` superuser, one for the
@@ -125,16 +132,16 @@ All commands below run in an **elevated (Administrator) PowerShell session**.
 ### B2. Unblock the scripts (files copied from another machine may be blocked)
 
 ```powershell
-Get-ChildItem C:\temp\pg-setup\provision -Recurse -File | Unblock-File
+Get-ChildItem C:\ep\setup\provision -Recurse -File | Unblock-File
 ```
 
 ### B3. Run the orchestrator
 
 ```powershell
-cd C:\temp\pg-setup\provision
+cd C:\ep\setup\provision
 
 .\provision-postgres.ps1 `
-    -InstallerPath C:\temp\pg-setup\postgresql-17.5-1-windows-x64.exe `
+    -InstallerPath C:\ep\setup\postgresql-17.5-1-windows-x64.exe `
     -SuperPassword '<superuser-password>' `
     -AppPassword   '<ep_app-password>'
 ```
@@ -142,8 +149,8 @@ cd C:\temp\pg-setup\provision
 With an internal-CA certificate (A3), add:
 
 ```powershell
-    -SslCertPath C:\temp\pg-setup\certs\server.crt `
-    -SslKeyPath  C:\temp\pg-setup\certs\server.key
+    -SslCertPath C:\ep\setup\certs\server.crt `
+    -SslKeyPath  C:\ep\setup\certs\server.key
 ```
 
 The orchestrator runs steps 01→09 and stops at the first failure, naming the
@@ -155,11 +162,11 @@ What you end up with:
 | Item          | Value                                                        |
 |---------------|--------------------------------------------------------------|
 | Service       | `postgresql-x64-17`, automatic start                         |
-| Data dir      | `C:\pgdata`                                                  |
+| Data dir      | `C:\ep\pgdata`                                               |
 | Database      | `ep`, owned by role `ep_app`, PUBLIC access revoked          |
 | Schema        | 6 tables (workspaces, notes, linked tables, chat history)    |
 | Access        | **localhost only** — no firewall port open, no network HBA   |
-| Backups       | nightly 02:00 `pg_dump` to `C:\pgbackups`, 14-day retention  |
+| Backups       | nightly 02:00 `pg_dump` to `C:\ep\pgbackups`, 14-day retention |
 | Logs          | csvlog in the data directory, statements >500 ms logged      |
 
 ### B4. If a step fails
@@ -184,7 +191,7 @@ Get-Service postgresql-x64-17                          # Running
 Get-ScheduledTask -TaskName 'PostgreSQL nightly backup (ep)'                            # Ready
 ```
 
-Run a backup once by hand and confirm a `.dump` file appears in `C:\pgbackups`:
+Run a backup once by hand and confirm a `.dump` file appears in `C:\ep\pgbackups`:
 
 ```powershell
 Start-ScheduledTask -TaskName 'PostgreSQL nightly backup (ep)'
@@ -198,7 +205,7 @@ Do this only when the application is ready to connect. It is a single
 standalone script — no other step needs re-running:
 
 ```powershell
-cd C:\temp\pg-setup\provision
+cd C:\ep\setup\provision
 
 .\steps\07-network.ps1 `
     -SuperPassword '<superuser-password>' `
@@ -229,8 +236,8 @@ psql "postgresql://ep_app:<password>@<vm-host>:5432/ep?sslmode=require" -c "SELE
 | Change allowed subnet    | re-run `steps\07-network.ps1` with the new `-AllowedCidr`           |
 | Add/replace TLS cert     | re-run `steps\04-ssl.ps1 -SslCertPath ... -SslKeyPath ... -RestartService` |
 | Re-apply schema changes  | update `schema.sql`, re-run `steps\06-schema.ps1` (DDL is idempotent) |
-| Check backup history     | `C:\pgbackups\backup.log`                                           |
-| Server logs              | `C:\pgdata\log\*.csv`                                               |
+| Check backup history     | `C:\ep\pgbackups\backup.log`                                        |
+| Server logs              | `C:\ep\pgdata\log\*.csv`                                            |
 
 **Windows Update note:** the VM is a single point of failure; a reboot briefly
 interrupts saved notes/chat history (the app's core endpoint-testing features

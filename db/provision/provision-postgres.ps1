@@ -35,9 +35,11 @@
     Default: 17.
 
 .PARAMETER DataDir
-    PostgreSQL data directory. Default: C:\pgdata (the VM has a single C:
-    drive; the PostgreSQL binaries live under C:\Program Files\PostgreSQL).
-    Point this at a dedicated data disk if one is ever attached.
+    PostgreSQL data directory. Default: C:\ep\pgdata - everything the
+    project owns lives under the C:\ep project directory (the VM has a
+    single C: drive; the PostgreSQL binaries themselves install to
+    C:\Program Files\PostgreSQL). Point this at a dedicated data disk if
+    one is ever attached.
 
 .PARAMETER Port
     TCP port for PostgreSQL. Default: 5432.
@@ -70,7 +72,7 @@
     Path to the schema DDL. Default: schema.sql next to this script.
 
 .PARAMETER BackupDir
-    Directory for nightly pg_dump backups. Default: C:\pgbackups.
+    Directory for nightly pg_dump backups. Default: C:\ep\pgbackups.
 
 .PARAMETER BackupRetentionDays
     Days of backups to keep. Default: 14.
@@ -84,7 +86,7 @@
 .EXAMPLE
     # Phase 1 - provision the database, localhost-only (connectivity later):
     .\provision-postgres.ps1 `
-        -InstallerPath C:\temp\postgresql-17.5-1-windows-x64.exe `
+        -InstallerPath C:\ep\setup\postgresql-17.5-1-windows-x64.exe `
         -SuperPassword '<superuser-password>' `
         -AppPassword   '<ep_app-password>'
 
@@ -105,7 +107,7 @@
 param(
     [string]$InstallerPath,
     [string]$PgVersion = "17",
-    [string]$DataDir = "C:\pgdata",
+    [string]$DataDir = "C:\ep\pgdata",
     [int]$Port = 5432,
     [Parameter(Mandatory = $true)][string]$SuperPassword,
     [string]$AppDbName = "ep",
@@ -115,7 +117,7 @@ param(
     [string]$SslCertPath,
     [string]$SslKeyPath,
     [string]$SchemaFile = (Join-Path $PSScriptRoot "schema.sql"),
-    [string]$BackupDir = "C:\pgbackups",
+    [string]$BackupDir = "C:\ep\pgbackups",
     [int]$BackupRetentionDays = 14,
     [switch]$SkipInstall,
     [switch]$SkipBackupTask
