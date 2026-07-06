@@ -35,8 +35,9 @@
     Default: 17.
 
 .PARAMETER DataDir
-    PostgreSQL data directory, ideally on a dedicated data disk. Default:
-    D:\pgdata.
+    PostgreSQL data directory. Default: C:\pgdata (the VM has a single C:
+    drive; the PostgreSQL binaries live under C:\Program Files\PostgreSQL).
+    Point this at a dedicated data disk if one is ever attached.
 
 .PARAMETER Port
     TCP port for PostgreSQL. Default: 5432.
@@ -69,7 +70,7 @@
     Path to the schema DDL. Default: schema.sql next to this script.
 
 .PARAMETER BackupDir
-    Directory for nightly pg_dump backups. Default: D:\pgbackups.
+    Directory for nightly pg_dump backups. Default: C:\pgbackups.
 
 .PARAMETER BackupRetentionDays
     Days of backups to keep. Default: 14.
@@ -104,7 +105,7 @@
 param(
     [string]$InstallerPath,
     [string]$PgVersion = "17",
-    [string]$DataDir = "D:\pgdata",
+    [string]$DataDir = "C:\pgdata",
     [int]$Port = 5432,
     [Parameter(Mandatory = $true)][string]$SuperPassword,
     [string]$AppDbName = "ep",
@@ -114,7 +115,7 @@ param(
     [string]$SslCertPath,
     [string]$SslKeyPath,
     [string]$SchemaFile = (Join-Path $PSScriptRoot "schema.sql"),
-    [string]$BackupDir = "D:\pgbackups",
+    [string]$BackupDir = "C:\pgbackups",
     [int]$BackupRetentionDays = 14,
     [switch]$SkipInstall,
     [switch]$SkipBackupTask

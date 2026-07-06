@@ -24,7 +24,7 @@
 [CmdletBinding()]
 param(
     [string]$PgVersion = "17",
-    [string]$DataDir = "D:\pgdata",
+    [string]$DataDir = "C:\pgdata",
     [int]$Port = 5432,
     [Parameter(Mandatory = $true)][string]$SuperPassword,
     [Parameter(Mandatory = $true)][string]$AllowedCidr,

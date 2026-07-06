@@ -16,7 +16,7 @@ param(
     [int]$Port = 5432,
     [Parameter(Mandatory = $true)][string]$SuperPassword,
     [string]$AppDbName = "ep",
-    [string]$BackupDir = "D:\pgbackups",
+    [string]$BackupDir = "C:\pgbackups",
     [int]$RetentionDays = 14
 )
 

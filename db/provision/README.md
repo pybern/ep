@@ -113,9 +113,12 @@ All commands below run in an **elevated (Administrator) PowerShell session**.
 
 ### B1. Pre-checks
 
-- A data disk is attached and formatted (default expected drive: `D:`).
-  The Postgres data directory defaults to `D:\pgdata` and backups to
-  `D:\pgbackups`; override with `-DataDir` / `-BackupDir` if yours differs.
+- Everything lives on the `C:` drive: the PostgreSQL installation goes to
+  `C:\Program Files\PostgreSQL\<version>` (EDB default), the data directory
+  defaults to `C:\pgdata`, and backups to `C:\pgbackups`. If a dedicated
+  data disk is ever attached, override with `-DataDir` / `-BackupDir`.
+- Ensure `C:` has enough free space for the installation, data, and
+  backups (installer ~1 GB installed, plus data growth and 14 days of dumps).
 - Decide two strong passwords: one for the `postgres` superuser, one for the
   application role `ep_app`. Store both in your password manager/vault.
 
@@ -152,17 +155,17 @@ What you end up with:
 | Item          | Value                                                        |
 |---------------|--------------------------------------------------------------|
 | Service       | `postgresql-x64-17`, automatic start                         |
-| Data dir      | `D:\pgdata`                                                  |
+| Data dir      | `C:\pgdata`                                                  |
 | Database      | `ep`, owned by role `ep_app`, PUBLIC access revoked          |
 | Schema        | 6 tables (workspaces, notes, linked tables, chat history)    |
 | Access        | **localhost only** — no firewall port open, no network HBA   |
-| Backups       | nightly 02:00 `pg_dump` to `D:\pgbackups`, 14-day retention  |
+| Backups       | nightly 02:00 `pg_dump` to `C:\pgbackups`, 14-day retention  |
 | Logs          | csvlog in the data directory, statements >500 ms logged      |
 
 ### B4. If a step fails
 
 1. Read the `STEP FAILED [name]: <reason>` message (also in the transcript).
-2. Fix the cause (e.g. attach the data disk, free the port, correct a path).
+2. Fix the cause (e.g. free up disk space, free the port, correct a path).
 3. Re-run — either the whole orchestrator (all steps are idempotent and
    skip/no-op what is already done) or just the failed step, e.g.:
 
@@ -181,7 +184,7 @@ Get-Service postgresql-x64-17                          # Running
 Get-ScheduledTask -TaskName 'PostgreSQL nightly backup (ep)'                            # Ready
 ```
 
-Run a backup once by hand and confirm a `.dump` file appears in `D:\pgbackups`:
+Run a backup once by hand and confirm a `.dump` file appears in `C:\pgbackups`:
 
 ```powershell
 Start-ScheduledTask -TaskName 'PostgreSQL nightly backup (ep)'
@@ -226,8 +229,8 @@ psql "postgresql://ep_app:<password>@<vm-host>:5432/ep?sslmode=require" -c "SELE
 | Change allowed subnet    | re-run `steps\07-network.ps1` with the new `-AllowedCidr`           |
 | Add/replace TLS cert     | re-run `steps\04-ssl.ps1 -SslCertPath ... -SslKeyPath ... -RestartService` |
 | Re-apply schema changes  | update `schema.sql`, re-run `steps\06-schema.ps1` (DDL is idempotent) |
-| Check backup history     | `D:\pgbackups\backup.log`                                           |
-| Server logs              | `D:\pgdata\log\*.csv`                                               |
+| Check backup history     | `C:\pgbackups\backup.log`                                           |
+| Server logs              | `C:\pgdata\log\*.csv`                                               |
 
 **Windows Update note:** the VM is a single point of failure; a reboot briefly
 interrupts saved notes/chat history (the app's core endpoint-testing features
