@@ -12,7 +12,7 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
 [CmdletBinding()]
 param(
-    [string]$PgVersion = "17",
+    [string]$PgVersion = "18",
     [int]$Port = 5432,
     [Parameter(Mandatory = $true)][string]$SuperPassword,
     [string]$AppDbName = "ep",
@@ -34,6 +34,19 @@ try {
     Write-Host "    $("$version".Trim())"
 
     $appArgs = @{ PgBin = $PgBin; Port = $Port; Database = $AppDbName; User = $AppRole; Password = $AppPassword }
+
+    # All application tables must be present.
+    $expectedTables = @(
+        "workspaces", "table_notes", "column_notes",
+        "linked_tables", "chat_conversations", "chat_messages"
+    )
+    $existing = Invoke-Psql @appArgs -TuplesOnly -Sql "SELECT tablename FROM pg_tables WHERE schemaname = 'public';"
+    $existingNames = @("$existing" -split "\s+" | Where-Object { $_ })
+    $missing = @($expectedTables | Where-Object { $existingNames -notcontains $_ })
+    if ($missing.Count -gt 0) {
+        throw "Missing application tables: $($missing -join ', '). Re-run steps\06-schema.ps1."
+    }
+    Write-Host "    OK: all $($expectedTables.Count) application tables present."
 
     # Round-trip as the app role: insert, read back, delete.
     $marker = [guid]::NewGuid().ToString()

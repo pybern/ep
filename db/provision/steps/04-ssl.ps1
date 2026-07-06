@@ -16,8 +16,9 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
 [CmdletBinding()]
 param(
-    [string]$PgVersion = "17",
-    [string]$DataDir = "C:\ep\pgdata",
+    [string]$PgVersion = "18",
+    # Auto-detected from the service registration when omitted.
+    [string]$DataDir,
     [int]$Port = 5432,
     [Parameter(Mandatory = $true)][string]$SuperPassword,
     [string]$SslCertPath,
@@ -35,6 +36,7 @@ try {
 
     $ctx = Get-PgContext -PgVersion $PgVersion
     if (-not $PgBin) { $PgBin = $ctx.PgBin }
+    if (-not $DataDir) { $DataDir = Get-PgDataDir -PgVersion $PgVersion }
 
     $certDest = Join-Path $DataDir "server.crt"
     $keyDest  = Join-Path $DataDir "server.key"

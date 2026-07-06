@@ -23,8 +23,9 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
 [CmdletBinding()]
 param(
-    [string]$PgVersion = "17",
-    [string]$DataDir = "C:\ep\pgdata",
+    [string]$PgVersion = "18",
+    # Auto-detected from the service registration when omitted.
+    [string]$DataDir,
     [int]$Port = 5432,
     [Parameter(Mandatory = $true)][string]$SuperPassword,
     [Parameter(Mandatory = $true)][string]$AllowedCidr,
@@ -47,6 +48,7 @@ try {
 
     $ctx = Get-PgContext -PgVersion $PgVersion
     if (-not $PgBin) { $PgBin = $ctx.PgBin }
+    if (-not $DataDir) { $DataDir = Get-PgDataDir -PgVersion $PgVersion }
 
     # 1. Listen on all interfaces; pg_hba + firewall constrain who gets in.
     Invoke-Psql -PgBin $PgBin -Port $Port -Password $SuperPassword -Sql "ALTER SYSTEM SET listen_addresses = '*';" | Out-Null

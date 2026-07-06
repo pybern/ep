@@ -16,8 +16,10 @@ function Write-Step {
 }
 
 # Derives install locations from the PostgreSQL major version (EDB defaults).
+# Installation is a prerequisite: PostgreSQL is expected at
+# C:\Program Files\PostgreSQL\<version> (default 18).
 function Get-PgContext {
-    param([string]$PgVersion = "17")
+    param([string]$PgVersion = "18")
     $installDir = "C:\Program Files\PostgreSQL\$PgVersion"
     [pscustomobject]@{
         InstallDir  = $installDir
@@ -26,6 +28,58 @@ function Get-PgContext {
         # which breaks when helpers are exercised on non-Windows hosts.
         PgBin       = "$installDir\bin"
     }
+}
+
+# Resolves the data directory of the existing installation without needing
+# credentials: reads the -D argument from the service registration, falling
+# back to the EDB default <InstallDir>\data.
+function Get-PgDataDir {
+    param([string]$PgVersion = "18")
+    $ctx = Get-PgContext -PgVersion $PgVersion
+    $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$($ctx.ServiceName)"
+    if (Test-Path $regPath) {
+        $imagePath = (Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue).ImagePath
+        if ($imagePath -and $imagePath -match '-D\s+"([^"]+)"') { return $Matches[1] }
+        if ($imagePath -and $imagePath -match '-D\s+(\S+)') { return $Matches[1] }
+    }
+    return "$($ctx.InstallDir)\data"
+}
+
+# True when the given user/password can authenticate against the local server.
+function Test-PgPassword {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingUsernameAndPasswordParams", "")]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
+    param(
+        [Parameter(Mandatory = $true)][string]$PgBin,
+        [int]$Port = 5432,
+        [string]$Database = "postgres",
+        [string]$User = "postgres",
+        [Parameter(Mandatory = $true)][string]$Password
+    )
+    try {
+        Invoke-Psql -PgBin $PgBin -Port $Port -Database $Database -User $User -Password $Password -Sql "SELECT 1;" | Out-Null
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+# Ensures the PostgreSQL service exists and is running; starts it if stopped.
+function Start-PgService {
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [Parameter(Mandatory = $true)][string]$PgBin,
+        [int]$Port = 5432
+    )
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $service) {
+        throw "PostgreSQL service '$ServiceName' not found. Installation is a prerequisite - install PostgreSQL first (expected under C:\Program Files\PostgreSQL)."
+    }
+    if ($service.Status -ne "Running") {
+        Start-Service -Name $ServiceName
+    }
+    Wait-PostgresReady -PgBin $PgBin -Port $Port
 }
 
 # Resolves a PostgreSQL executable, tolerating .exe-less names so the

@@ -4,9 +4,13 @@
 
 .DESCRIPTION
     A single, friendly entry point around provision-postgres.ps1 and the
-    step scripts. Run it with no arguments for an interactive, colored menu:
+    step scripts. PostgreSQL installation is a PREREQUISITE: the server is
+    expected at C:\Program Files\PostgreSQL\<version> (default 18) with its
+    Windows service registered - nothing here runs an installer.
 
-      [1] Status dashboard    - what is installed, what is missing, hints
+    Run it with no arguments for an interactive, colored menu:
+
+      [1] Status dashboard    - what is configured, what is missing, hints
       [2] Preparation guide   - manual steps (this server has NO internet)
       [3] Provision database  - guided prompts, then runs the orchestrator
       [4] Open network access - phase 2 (steps/07-network.ps1)
@@ -22,10 +26,11 @@
       .\onboard.ps1 -Action verify    -SuperPassword '<pw>' -AppPassword '<pw>'
       .\onboard.ps1 -Action backup
 
-    The database server is offline / air-gapped: nothing here downloads
-    anything. The PostgreSQL installer must be copied to the VM manually
-    (default location: <ProjectDir>\setup). When it is missing, the status
-    dashboard and the provisioning flow point you at the preparation guide.
+    All actions can be re-run at any time as part of a fresh setup: no
+    existing credentials are assumed. If the postgres superuser password is
+    unknown (forgotten or never handed over), the provisioning flow resets
+    it to the password you provide; the app role password is always set to
+    the provided value.
 
 .PARAMETER Action
     What to do. Default: menu (interactive TUI).
@@ -33,21 +38,16 @@
 
 .PARAMETER ProjectDir
     Project root that owns all ep artifacts on this VM. Default: C:\ep.
-    Derives the defaults for the installer search path (<ProjectDir>\setup),
-    the data directory (<ProjectDir>\pgdata) and backups (<ProjectDir>\pgbackups).
-
-.PARAMETER InstallerPath
-    Explicit path to the EDB PostgreSQL installer exe. When omitted, the
-    newest postgresql-*.exe found in <ProjectDir>\setup is used.
+    Derives the default for backups (<ProjectDir>\pgbackups).
 
 .PARAMETER PgVersion
     PostgreSQL major version. When omitted it is auto-detected: the highest
-    version already installed under C:\Program Files\PostgreSQL (or with a
-    postgresql-x64-* service) wins, otherwise the version is read from the
-    staged installer filename. Falls back to 17.
+    version installed under C:\Program Files\PostgreSQL (or with a
+    postgresql-x64-* service) wins. Falls back to 18.
 
 .PARAMETER DataDir
-    PostgreSQL data directory. Default: <ProjectDir>\pgdata.
+    PostgreSQL data directory. When omitted it is auto-detected from the
+    existing installation's service registration.
 
 .PARAMETER BackupDir
     Backup directory. Default: <ProjectDir>\pgbackups.
@@ -78,9 +78,6 @@
 .PARAMETER SslKeyPath
     Optional PEM private key matching -SslCertPath.
 
-.PARAMETER SkipInstall
-    Pass through to the orchestrator: skip the installer step.
-
 .PARAMETER SkipBackupTask
     Pass through to the orchestrator: skip the backup Scheduled Task.
 
@@ -92,15 +89,14 @@
     from an elevated (Administrator) session; the dashboard tells you if not.
 #>
 # Plain-text password parameters are deliberate: the wrapped scripts consume
-# them as text (PGPASSWORD / EDB installer --superpassword).
+# them as text (PGPASSWORD / pgpass.conf).
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
 [CmdletBinding()]
 param(
     [ValidateSet("menu", "status", "checklist", "provision", "network", "backup", "verify")]
     [string]$Action = "menu",
     [string]$ProjectDir = "C:\ep",
-    [string]$InstallerPath,
-    [string]$PgVersion = "17",
+    [string]$PgVersion = "18",
     [string]$DataDir,
     [string]$BackupDir,
     [int]$Port = 5432,
@@ -111,7 +107,6 @@ param(
     [string]$AllowedCidr,
     [string]$SslCertPath,
     [string]$SslKeyPath,
-    [switch]$SkipInstall,
     [switch]$SkipBackupTask,
     [switch]$NoColor
 )
@@ -133,14 +128,12 @@ function Join-PathString {
 }
 
 $script:SetupDir = Join-PathString $ProjectDir "setup"
-if (-not $DataDir) { $DataDir = Join-PathString $ProjectDir "pgdata" }
 if (-not $BackupDir) { $BackupDir = Join-PathString $ProjectDir "pgbackups" }
 
 $script:ProvisionScript = Join-Path $PSScriptRoot "provision-postgres.ps1"
 $script:StepsDir = Join-Path $PSScriptRoot "steps"
 $script:SchemaFile = Join-Path $PSScriptRoot "schema.sql"
 $script:BackupTaskName = "PostgreSQL nightly backup (ep)"
-$script:EdbDownloadUrl = "https://www.enterprisedb.com/downloads/postgres-postgresql-downloads"
 
 $script:UseColor = -not ($NoColor -or ($env:NO_COLOR -and $env:NO_COLOR -ne ""))
 
@@ -258,7 +251,7 @@ function Get-FreeSpaceGB {
 }
 
 # Base directory of the EDB installs; each major version ("flavour") gets
-# its own subdirectory, e.g. C:\Program Files\PostgreSQL\17, ...\18.
+# its own subdirectory, e.g. C:\Program Files\PostgreSQL\18.
 $script:PgBaseDir = "C:\Program Files\PostgreSQL"
 
 # All PostgreSQL major versions present on this machine, detected from both
@@ -275,38 +268,6 @@ function Get-InstalledPgVersions {
         }
     }
     return @($versions | Sort-Object { [int]$_ } -Unique)
-}
-
-# Major version encoded in an EDB installer filename,
-# e.g. postgresql-18.1-1-windows-x64.exe -> 18.
-function Get-InstallerMajorVersion {
-    param([string]$Path)
-    if ($Path -and ((Split-Path -Leaf $Path) -match '^postgresql-(\d+)[.-]')) { return $Matches[1] }
-    return $null
-}
-
-# All staged installers, newest first.
-function Find-StagedInstallers {
-    $hits = @()
-    foreach ($dir in @($script:SetupDir, $ProjectDir)) {
-        if (-not (Test-Path $dir)) { continue }
-        $hits += @(Get-ChildItem -Path $dir -Filter "postgresql-*.exe" -File -ErrorAction SilentlyContinue)
-    }
-    return @($hits | Sort-Object LastWriteTime -Descending)
-}
-
-# Finds the PostgreSQL installer: explicit path first; otherwise a staged
-# installer matching the target version is preferred, then the newest one.
-function Find-Installer {
-    if ($InstallerPath) {
-        if (Test-Path $InstallerPath) { return (Resolve-Path $InstallerPath).Path }
-        return $null
-    }
-    $staged = @(Find-StagedInstallers)
-    if ($staged.Count -eq 0) { return $null }
-    $matching = @($staged | Where-Object { (Get-InstallerMajorVersion $_.FullName) -eq $PgVersion })
-    if ($matching.Count -gt 0) { return $matching[0].FullName }
-    return $staged[0].FullName
 }
 
 function Get-ServiceState {
@@ -346,7 +307,7 @@ function Get-StatusChecks {
     else {
         $checks += [pscustomobject]@{
             Label = "Project directory"; State = "WARN"; Detail = "$ProjectDir does not exist yet"
-            Hint  = "It is created automatically during provisioning; create $script:SetupDir yourself to stage the installer."
+            Hint  = "It is created automatically during provisioning; stage these scripts under $script:SetupDir\provision."
         }
     }
 
@@ -358,60 +319,50 @@ function Get-StatusChecks {
     elseif ($freeGb -lt 5) {
         $checks += [pscustomobject]@{
             Label = "Free disk space"; State = "WARN"; Detail = "$freeGb GB free"
-            Hint  = "Budget ~1 GB for the installation plus data growth and 14 days of dumps; consider freeing space first."
+            Hint  = "Budget space for data growth and 14 days of dumps; consider freeing space first."
         }
     }
     else {
         $checks += [pscustomobject]@{ Label = "Free disk space"; State = "OK"; Detail = "$freeGb GB free"; Hint = "" }
     }
 
-    # Installed flavours --------------------------------------------------------
+    # PostgreSQL installation (prerequisite) ------------------------------------
     $installedVersions = @(Get-InstalledPgVersions)
-    if ($installedVersions.Count -gt 0) {
-        $detail = ($installedVersions | ForEach-Object { "$script:PgBaseDir\$_" }) -join ", "
+    if (Test-Path $ctx.InstallDir) {
         $hint = ""
-        if ($installedVersions -notcontains $PgVersion) {
-            $hint = "Target version $PgVersion is not among them - pass -PgVersion $($installedVersions[-1]) to manage the existing install, or stage a $PgVersion installer."
+        if ($installedVersions.Count -gt 1) {
+            $hint = "Multiple versions found ($($installedVersions -join ', ')) - targeting $PgVersion (pass -PgVersion to switch)."
         }
-        elseif ($installedVersions.Count -gt 1) {
-            $hint = "Multiple flavours found - targeting $PgVersion (pass -PgVersion to switch)."
+        $checks += [pscustomobject]@{ Label = "PostgreSQL installation"; State = "OK"; Detail = $ctx.InstallDir; Hint = $hint }
+    }
+    elseif ($installedVersions.Count -gt 0) {
+        $checks += [pscustomobject]@{
+            Label = "PostgreSQL installation"; State = "FAIL"; Detail = "version $PgVersion not found at $($ctx.InstallDir)"
+            Hint  = "Installed versions: $($installedVersions -join ', '). Pass -PgVersion $($installedVersions[-1]) to target one of them."
         }
-        $checks += [pscustomobject]@{ Label = "Installed flavours"; State = "OK"; Detail = $detail; Hint = $hint }
-    }
-    else {
-        $checks += [pscustomobject]@{ Label = "Installed flavours"; State = "INFO"; Detail = "none found under $script:PgBaseDir"; Hint = "" }
-    }
-
-    # PostgreSQL service / installer ------------------------------------------
-    $serviceState = Get-ServiceState -Name $ctx.ServiceName
-    $installer = Find-Installer
-    if ($serviceState) {
-        $state = "OK"
-        if ($serviceState -ne "Running") { $state = "WARN" }
-        $checks += [pscustomobject]@{ Label = "PostgreSQL service"; State = $state; Detail = "$($ctx.ServiceName) is $($serviceState.ToLower())"; Hint = "" }
     }
     else {
         $checks += [pscustomobject]@{
-            Label = "PostgreSQL service"; State = "WARN"; Detail = "$($ctx.ServiceName) not installed"
-            Hint  = "Run option [3] Provision database once the installer is staged."
+            Label = "PostgreSQL installation"; State = "FAIL"; Detail = "nothing found under $script:PgBaseDir"
+            Hint  = "Installation is a prerequisite for these scripts. Install PostgreSQL $PgVersion first, then re-run this onboarding."
         }
-        if ($installer) {
-            $installerVersion = Get-InstallerMajorVersion $installer
-            if ($installerVersion -and $installerVersion -ne $PgVersion) {
-                $checks += [pscustomobject]@{
-                    Label = "PostgreSQL installer"; State = "WARN"; Detail = "$installer (PostgreSQL $installerVersion, target is $PgVersion)"
-                    Hint  = "Version mismatch: pass -PgVersion $installerVersion to install this flavour, or stage a PostgreSQL $PgVersion installer."
-                }
-            }
-            else {
-                $checks += [pscustomobject]@{ Label = "PostgreSQL installer"; State = "OK"; Detail = $installer; Hint = "" }
-            }
+    }
+
+    # PostgreSQL service ---------------------------------------------------------
+    $serviceState = Get-ServiceState -Name $ctx.ServiceName
+    if ($serviceState) {
+        $state = "OK"
+        $hint = ""
+        if ($serviceState -ne "Running") {
+            $state = "WARN"
+            $hint = "The provisioning flow (option [3]) starts it automatically."
         }
-        else {
-            $checks += [pscustomobject]@{
-                Label = "PostgreSQL installer"; State = "FAIL"; Detail = "no postgresql-*.exe found in $script:SetupDir"
-                Hint  = "This server has NO internet access. Download the EDB installer on a connected machine and copy it to $script:SetupDir - see option [2] Preparation guide."
-            }
+        $checks += [pscustomobject]@{ Label = "PostgreSQL service"; State = $state; Detail = "$($ctx.ServiceName) is $($serviceState.ToLower())"; Hint = $hint }
+    }
+    else {
+        $checks += [pscustomobject]@{
+            Label = "PostgreSQL service"; State = "FAIL"; Detail = "$($ctx.ServiceName) not registered"
+            Hint  = "Installation is a prerequisite. If PostgreSQL $PgVersion is installed but the service is missing, re-run its installer to repair the service registration."
         }
     }
 
@@ -423,7 +374,7 @@ function Get-StatusChecks {
         $checks += [pscustomobject]@{ Label = "Data directory"; State = "WARN"; Detail = "$DataDir exists but is not an initialized cluster"; Hint = "" }
     }
     else {
-        $checks += [pscustomobject]@{ Label = "Data directory"; State = "INFO"; Detail = "$DataDir (created during provisioning)"; Hint = "" }
+        $checks += [pscustomobject]@{ Label = "Data directory"; State = "WARN"; Detail = "$DataDir not found"; Hint = "Auto-detected from the service registration - pass -DataDir if it is elsewhere." }
     }
 
     # Schema file ----------------------------------------------------------------
@@ -493,14 +444,17 @@ function Show-StatusDashboard {
     if ($byLabel["Administrator session"].State -eq "FAIL") {
         Write-C "re-open PowerShell as Administrator, then re-run this script." White
     }
-    elseif ($byLabel.ContainsKey("PostgreSQL installer") -and $byLabel["PostgreSQL installer"].State -eq "FAIL") {
-        Write-C "follow the preparation guide (option [2]) to stage the installer." White
+    elseif ($byLabel["PostgreSQL installation"].State -eq "FAIL") {
+        Write-C "install PostgreSQL $PgVersion first (installation is a prerequisite), then re-run this onboarding." White
+    }
+    elseif ($byLabel["PostgreSQL service"].State -eq "FAIL") {
+        Write-C "repair the PostgreSQL service registration, then re-run this onboarding." White
     }
     elseif ($byLabel["PostgreSQL service"].State -ne "OK") {
-        Write-C "provision the database (option [3])." White
+        Write-C "provision the database (option [3]) - it starts the service and configures everything." White
     }
     else {
-        Write-C "database is up - verify it (option [6]) or open network access (option [4]) when the app is ready." White
+        Write-C "provision or re-verify the database (options [3]/[6]), or open network access (option [4]) when the app is ready." White
     }
     return $checks
 }
@@ -512,20 +466,16 @@ function Show-StatusDashboard {
 function Show-Checklist {
     Write-C "  Preparation guide - manual steps (server has NO internet)" Cyan
     Show-Rule
-    Write-C "  This VM cannot download anything. Every artifact is prepared on an" Gray
-    Write-C "  internet-connected machine and copied across manually." Gray
+    Write-C "  PostgreSQL is already installed on this VM (installation is a" Gray
+    Write-C "  prerequisite, expected at $script:PgBaseDir\$PgVersion)." Gray
+    Write-C "  This VM cannot download anything; the remaining artifacts are" Gray
+    Write-C "  prepared on an internet-connected machine and copied across manually." Gray
     Write-C ""
 
     Write-C "  On an internet-connected machine" Yellow
     Write-C "  1." Green -NoNewline
-    Write-C " Download the EDB installer for PostgreSQL $PgVersion (Windows x86-64):" White
-    Write-C "       $script:EdbDownloadUrl" DarkCyan
-    Write-C "  2." Green -NoNewline
-    Write-C " Record its checksum so it can be verified after transfer:" White
-    Write-C "       Get-FileHash .\postgresql-$PgVersion.x-windows-x64.exe -Algorithm SHA256" DarkGray
-    Write-C "  3." Green -NoNewline
     Write-C " Collect this whole db/provision folder (keep the layout intact)." White
-    Write-C "  4." Green -NoNewline
+    Write-C "  2." Green -NoNewline
     Write-C " Optional: a PEM server certificate + key from your internal CA" White
     Write-C "     (otherwise a self-signed pair is generated during provisioning)." Gray
     Write-C ""
@@ -537,24 +487,21 @@ function Show-Checklist {
     Write-C ""
     Write-C "  Place everything under the project setup directory:" White
     Write-C "       $script:SetupDir\" DarkCyan
-    Write-C "       |- postgresql-$PgVersion.x-windows-x64.exe" DarkCyan
     Write-C "       |- provision\   (these scripts)" DarkCyan
     Write-C "       \- certs\       (optional server.crt / server.key)" DarkCyan
     Write-C ""
 
     Write-C "  On this VM" Yellow
-    Write-C "  5." Green -NoNewline
-    Write-C " Verify the installer checksum matches the one recorded in step 2:" White
-    Write-C "       Get-FileHash $script:SetupDir\postgresql-*.exe -Algorithm SHA256" DarkGray
-    Write-C "  6." Green -NoNewline
+    Write-C "  3." Green -NoNewline
     Write-C " Unblock the copied scripts (files from another machine may be blocked):" White
     Write-C "       Get-ChildItem $script:SetupDir\provision -Recurse -File | Unblock-File" DarkGray
-    Write-C "  7." Green -NoNewline
+    Write-C "  4." Green -NoNewline
     Write-C " Decide two strong passwords (postgres superuser + $AppRole role) and" White
-    Write-C "     store them in your password manager/vault." White
-    Write-C "  8." Green -NoNewline
-    Write-C " Re-run this onboarding - the status dashboard should now find the" White
-    Write-C "     installer, and option [3] provisions the database." White
+    Write-C "     store them in your password manager/vault. You do NOT need the" White
+    Write-C "     original install-time password - provisioning resets the superuser" White
+    Write-C "     password to the one you provide if the current one is unknown." White
+    Write-C "  5." Green -NoNewline
+    Write-C " Re-run this onboarding - option [3] provisions the database." White
 }
 
 # ---------------------------------------------------------------------------
@@ -576,8 +523,6 @@ function Invoke-Provision {
 
     $ctx = Get-PgContext -PgVersion $PgVersion
     $serviceExists = [bool](Get-ServiceState -Name $ctx.ServiceName)
-    $installer = Find-Installer
-    $doSkipInstall = [bool]$SkipInstall
     $localCidr = $AllowedCidr
     $localCert = $SslCertPath
     $localKey = $SslKeyPath
@@ -589,25 +534,18 @@ function Invoke-Provision {
         return 1
     }
 
-    if ($serviceExists -and -not $doSkipInstall) {
-        Write-C "  PostgreSQL service '$($ctx.ServiceName)' already exists - the install step will be skipped." DarkYellow
-        $doSkipInstall = $true
-    }
-
-    if (-not $serviceExists -and -not $installer) {
-        Write-C "  Cannot provision: PostgreSQL is not installed and no installer was found." Red
-        Write-C "  Expected location: $script:SetupDir\postgresql-*.exe (or pass -InstallerPath)." Yellow
-        Write-C "  This server has no internet access - see the preparation guide (option [2] / -Action checklist)." Yellow
+    if (-not $serviceExists) {
+        Write-C "  Cannot provision: PostgreSQL service '$($ctx.ServiceName)' was not found." Red
+        Write-C "  Installation is a prerequisite - PostgreSQL $PgVersion is expected at $($ctx.InstallDir)." Yellow
+        Write-C "  Install PostgreSQL first (or pass -PgVersion for the version that is installed), then re-run." Yellow
         return 1
     }
 
     if ($Interactive) {
         Write-C "  Guided provisioning" Cyan
         Show-Rule
-        if ($installer) {
-            Write-C "  Installer: " White -NoNewline
-            Write-C $installer Green
-        }
+        Write-C "  Existing installation: " White -NoNewline
+        Write-C "PostgreSQL $PgVersion at $($ctx.InstallDir)" Green
         Write-C ""
 
         # Start from the effective defaults; only prompt per value on request.
@@ -634,26 +572,10 @@ function Invoke-Provision {
         if (-not $localCidr -and (Read-YesNo -Label "Open network access now (phase 2 - usually done later)?" -Default:$false)) {
             $localCidr = Read-WithDefault -Label "Allowed CIDR (e.g. 10.20.30.0/24)"
         }
-        # If the chosen version and the staged installer disagree, say so
-        # before asking for passwords rather than failing mid-install.
-        if (-not $doSkipInstall -and $installer) {
-            $installerVersion = Get-InstallerMajorVersion $installer
-            if ($installerVersion -and $installerVersion -ne $pgVersionLocal) {
-                Write-C ""
-                Write-C "  The staged installer is PostgreSQL $installerVersion but the target version is $pgVersionLocal." Yellow
-                Write-C "  Service name and install directory are derived from the target version, so a" Yellow
-                Write-C "  mismatch will provision against the wrong paths." Yellow
-                if (Read-YesNo -Label "Switch the target version to $installerVersion (recommended)?") {
-                    $pgVersionLocal = $installerVersion
-                }
-                elseif (-not (Read-YesNo -Label "Continue with version $pgVersionLocal anyway?" -Default:$false)) {
-                    Write-C "  Aborted - nothing was changed." Yellow
-                    return 0
-                }
-            }
-        }
 
         Write-C ""
+        Write-C "  No existing credentials are assumed: if the current 'postgres' password" DarkGray
+        Write-C "  is unknown, provisioning resets it to the one you enter now." DarkGray
         if (-not $superPw) { $superPw = Read-Password -Label "Password for the 'postgres' superuser" }
         if (-not $appPw) { $appPw = Read-Password -Label "Password for the '$appRoleLocal' application role" }
 
@@ -661,7 +583,7 @@ function Invoke-Provision {
         Write-C "  Summary" Cyan
         Show-Rule
         Write-C ("  {0,-22}{1}" -f "Version:", $pgVersionLocal) Gray
-        Write-C ("  {0,-22}{1}" -f "Install step:", $(if ($doSkipInstall) { "skipped (already installed)" } else { $installer })) Gray
+        Write-C ("  {0,-22}{1}" -f "Installation:", $ctx.InstallDir) Gray
         Write-C ("  {0,-22}{1}" -f "Data directory:", $dataDirLocal) Gray
         Write-C ("  {0,-22}{1}" -f "Backups:", $backupDirLocal) Gray
         Write-C ("  {0,-22}{1}" -f "Port:", $portLocal) Gray
@@ -685,20 +607,10 @@ function Invoke-Provision {
             Write-C "  -Action provision requires -SuperPassword and -AppPassword when run non-interactively." Red
             return 1
         }
-        # Non-interactive runs cannot confirm a flavour mismatch - fail fast.
-        if (-not $doSkipInstall -and $installer) {
-            $installerVersion = Get-InstallerMajorVersion $installer
-            if ($installerVersion -and $installerVersion -ne $pgVersionLocal) {
-                Write-C "  The staged installer is PostgreSQL $installerVersion but the target version is $pgVersionLocal." Red
-                Write-C "  Pass -PgVersion $installerVersion, or -InstallerPath pointing at a PostgreSQL $pgVersionLocal installer." Yellow
-                return 1
-            }
-        }
     }
 
     $arguments = @{
         PgVersion     = $pgVersionLocal
-        DataDir       = $dataDirLocal
         BackupDir     = $backupDirLocal
         Port          = $portLocal
         AppDbName     = $appDbLocal
@@ -706,8 +618,7 @@ function Invoke-Provision {
         SuperPassword = $superPw
         AppPassword   = $appPw
     }
-    if (-not $doSkipInstall) { $arguments.InstallerPath = $installer }
-    if ($doSkipInstall) { $arguments.SkipInstall = $true }
+    if ($dataDirLocal) { $arguments.DataDir = $dataDirLocal }
     if ($SkipBackupTask) { $arguments.SkipBackupTask = $true }
     if ($localCidr) { $arguments.AllowedCidr = $localCidr }
     if ($localCert) { $arguments.SslCertPath = $localCert; $arguments.SslKeyPath = $localKey }
@@ -746,11 +657,13 @@ function Invoke-Network {
         Write-C "  -Action network requires -AllowedCidr and -SuperPassword when run non-interactively." Red
         return 1
     }
-    return Invoke-ChildScript -Path (Join-Path $script:StepsDir "07-network.ps1") -Arguments @{
-        PgVersion = $PgVersion; DataDir = $DataDir; Port = $Port
+    $arguments = @{
+        PgVersion = $PgVersion; Port = $Port
         SuperPassword = $superPw; AllowedCidr = $localCidr
         AppDbName = $AppDbName; AppRole = $AppRole
     }
+    if ($DataDir) { $arguments.DataDir = $DataDir }
+    return Invoke-ChildScript -Path (Join-Path $script:StepsDir "07-network.ps1") -Arguments $arguments
 }
 
 function Invoke-BackupNow {
@@ -804,19 +717,15 @@ function Show-MenuOnce {
     # Compact readiness line so the menu opens with context.
     $ctx = Get-PgContext -PgVersion $PgVersion
     $serviceState = Get-ServiceState -Name $ctx.ServiceName
-    $installer = Find-Installer
     Write-C "  Quick status: " White -NoNewline
     if ($serviceState -eq "Running") {
         Write-C "PostgreSQL $PgVersion running" Green -NoNewline
     }
     elseif ($serviceState) {
-        Write-C "PostgreSQL installed ($($serviceState.ToLower()))" Yellow -NoNewline
-    }
-    elseif ($installer) {
-        Write-C "not installed - installer staged, ready to provision" Yellow -NoNewline
+        Write-C "PostgreSQL $PgVersion installed ($($serviceState.ToLower())) - provisioning will start it" Yellow -NoNewline
     }
     else {
-        Write-C "not installed - installer missing (see preparation guide)" Red -NoNewline
+        Write-C "PostgreSQL $PgVersion service not found - installation is a prerequisite" Red -NoNewline
     }
     if (-not (Test-IsElevated)) {
         Write-C "  |  " DarkGray -NoNewline
@@ -860,22 +769,19 @@ function Start-Menu {
 # Entry point
 # ---------------------------------------------------------------------------
 
-# Respect an explicit -PgVersion; otherwise adopt the flavour that is
-# actually present: the highest installed version wins, then the version
-# encoded in a staged installer filename, then the parameter default.
+# Respect an explicit -PgVersion; otherwise adopt the version that is
+# actually installed: the highest installed version wins, then the
+# parameter default (18).
 if (-not $PSBoundParameters.ContainsKey("PgVersion")) {
     $detectedVersions = @(Get-InstalledPgVersions)
     if ($detectedVersions.Count -gt 0) {
         $PgVersion = $detectedVersions[-1]
     }
-    else {
-        $staged = @(Find-StagedInstallers)
-        if ($staged.Count -gt 0) {
-            $stagedVersion = Get-InstallerMajorVersion $staged[0].FullName
-            if ($stagedVersion) { $PgVersion = $stagedVersion }
-        }
-    }
 }
+
+# Resolve the data directory from the existing installation once the target
+# version is known (used by the dashboard and passed through to the steps).
+if (-not $DataDir) { $DataDir = Get-PgDataDir -PgVersion $PgVersion }
 
 switch ($Action) {
     "menu" { Start-Menu; exit 0 }

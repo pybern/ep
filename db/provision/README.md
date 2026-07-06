@@ -1,9 +1,19 @@
 # PostgreSQL Provisioning — Windows Server VM (Offline / Air-Gapped)
 
 Provisions the PostgreSQL database for the Endpoint Connection Tester (ep)
-application on a Windows Server VM **with no internet access**. Nothing in
-these scripts downloads anything at provision time — every artifact is copied
-to the VM manually first.
+application on a Windows Server VM **with no internet access**.
+
+**PostgreSQL installation is a prerequisite.** These scripts do not run any
+installer: PostgreSQL is expected to already be installed at
+`C:\Program Files\PostgreSQL\18` (or another major version — pass
+`-PgVersion`) with its Windows service (`postgresql-x64-18`) registered.
+Everything here configures that existing installation.
+
+**No existing credentials are assumed.** If the `postgres` superuser
+password is unknown (forgotten, or the VM was handed over without it), the
+provisioning flow safely resets it to the password you provide. The
+application role's password is always set to the value you provide, whether
+the role is new or already exists.
 
 This is **phase 1** (database provisioning). Connecting the application
 (network access, API integration) is a later, separate phase.
@@ -22,18 +32,19 @@ db/provision/
 ├── lib/
 │   └── common.ps1             # shared helpers used by all steps
 └── steps/
-    ├── 01-preflight.ps1       # admin/disk/port/installer checks
-    ├── 02-install.ps1         # unattended EDB installer run
+    ├── 01-preflight.ps1       # admin/installation/service/schema checks
+    ├── 02-credentials.ps1     # superuser password check + reset if unknown
     ├── 03-configure.ps1       # ALTER SYSTEM tuning (localhost-only listen)
     ├── 04-ssl.ps1             # TLS certificate setup
     ├── 05-database.ps1        # app role + database creation
-    ├── 06-schema.ps1          # schema.sql applied as the app role
+    ├── 06-schema.ps1          # schema.sql applied; all tables verified
     ├── 07-network.ps1         # OPENS NETWORK ACCESS (phase 2 - run later)
     ├── 08-backup-task.ps1     # nightly backup Scheduled Task
     └── 09-verify.ps1          # end-to-end round-trip verification
 ```
 
-Every step is idempotent and independently runnable. If a step fails, fix the
+Every step is idempotent and independently runnable, and the whole flow can
+be restarted at any time as part of a fresh setup. If a step fails, fix the
 reported issue and re-run either the orchestrator or that single step.
 
 ---
@@ -49,7 +60,7 @@ cd C:\ep\setup\provision
 ```
 
 ```
- [1] Status dashboard     what is installed / missing, with hints
+ [1] Status dashboard     what is configured / missing, with hints
  [2] Preparation guide    manual steps (this server has NO internet)
  [3] Provision database   guided prompts, then runs the orchestrator
  [4] Open network access  phase 2 (steps\07-network.ps1)
@@ -58,11 +69,10 @@ cd C:\ep\setup\provision
 ```
 
 The status dashboard checks elevation, disk space, the project directory,
-the PostgreSQL service, the installer (searched for in `C:\ep\setup` by
-default), the data directory, the schema file, the port, and the backup
-task — and tells you the single next step to take. If the installer is
-missing it points you at the preparation guide, since the VM cannot
-download it.
+the PostgreSQL installation and service, the data directory, the schema
+file, the port, and the backup task — and tells you the single next step to
+take. If the installation itself is missing it says so: installing
+PostgreSQL is a prerequisite handled outside these scripts.
 
 Everything is also scriptable via `-Action` for repeatable, non-interactive
 runs (add `-NoColor` for logs; `NO_COLOR` is honored too):
@@ -76,46 +86,27 @@ runs (add `-NoColor` for logs; `NO_COLOR` is honored too):
 .\onboard.ps1 -Action backup
 ```
 
-Defaults derive from the project directory (`-ProjectDir`, default `C:\ep`):
-the installer is auto-detected in `C:\ep\setup`, data goes to `C:\ep\pgdata`,
-backups to `C:\ep\pgbackups`. Pass `-InstallerPath`, `-DataDir`, `-BackupDir`
-etc. to override. The sections below describe the same flow done by hand.
-
-The PostgreSQL version ("flavour") is auto-detected too: if a version is
-already installed (e.g. PostgreSQL 18 at `C:\Program Files\PostgreSQL\18`),
-the onboarding targets it; otherwise the version is read from the staged
-installer's filename (e.g. `postgresql-18.1-1-windows-x64.exe` → 18). Pass
-`-PgVersion` to pin a specific version — when several flavours are installed
-or the staged installer does not match the target, the status dashboard says
-so and the provisioning flow asks before continuing.
+The PostgreSQL version is auto-detected from what is installed under
+`C:\Program Files\PostgreSQL` (the highest version wins; default 18). The
+data directory is auto-detected from the service registration. Backups
+default to `<ProjectDir>\pgbackups` (`C:\ep\pgbackups`). Pass `-PgVersion`,
+`-DataDir`, `-BackupDir` etc. to override. The sections below describe the
+same flow done by hand.
 
 ---
 
 ## Part A — Prepare artifacts (on an internet-connected machine)
 
 The VM cannot download anything, so gather everything on a machine that can.
+PostgreSQL itself is already installed on the VM, so only the scripts (and
+optionally a TLS certificate) are needed.
 
-### A1. Download the PostgreSQL installer
-
-1. Go to the EDB download page:
-   `https://www.enterprisedb.com/downloads/postgres-postgresql-downloads`
-2. Download the **Windows x86-64** installer for **PostgreSQL 17**
-   (e.g. `postgresql-17.5-1-windows-x64.exe`, ~350 MB).
-3. Record the SHA-256 checksum so it can be verified after transfer:
-
-   ```powershell
-   Get-FileHash .\postgresql-17.5-1-windows-x64.exe -Algorithm SHA256
-   ```
-
-> If you standardize on a different major version, pass `-PgVersion` to the
-> scripts; everything else is derived from it.
-
-### A2. Collect the provisioning scripts
+### A1. Collect the provisioning scripts
 
 Copy this entire `db/provision/` folder (all files and subfolders — the steps
 dot-source `lib/common.ps1` by relative path, so the layout must be kept).
 
-### A3. (Optional) TLS certificate from your internal CA
+### A2. (Optional) TLS certificate from your internal CA
 
 For TLS with a proper internal-CA certificate instead of a self-signed one,
 also obtain:
@@ -127,7 +118,7 @@ If you skip this, the SSL step generates a self-signed pair with the openssl
 bundled with PostgreSQL, or skips TLS with a warning if that is unavailable.
 TLS can always be added later by re-running `steps\04-ssl.ps1`.
 
-### A4. Transfer to the VM
+### A3. Transfer to the VM
 
 Move the artifacts to the VM using whatever your environment allows:
 
@@ -136,32 +127,23 @@ Move the artifacts to the VM using whatever your environment allows:
 - **Internal file share** — copy to an SMB share the VM can reach, or
 - **Approved removable media**, following your organization's process.
 
-Layout on the VM — everything for this project lives under the `C:\ep`
-project directory (the provisioning defaults for data and backups point
-there too):
+Layout on the VM — project artifacts live under the `C:\ep` project
+directory; the PostgreSQL binaries and data live where the pre-installed
+instance put them (`C:\Program Files\PostgreSQL\18` by default):
 
 ```
 C:\ep\
 ├── setup\                          <- staging area for the artifacts
-│   ├── postgresql-17.5-1-windows-x64.exe
 │   ├── provision\                  <- the db/provision folder
 │   │   ├── provision-postgres.ps1
 │   │   ├── schema.sql
 │   │   ├── backup-postgres.ps1
 │   │   ├── lib\...
 │   │   └── steps\...
-│   └── certs\                      <- optional (A3)
+│   └── certs\                      <- optional (A2)
 │       ├── server.crt
 │       └── server.key
-├── pgdata\                         <- created by provisioning (data dir)
 └── pgbackups\                      <- created by provisioning (backups)
-```
-
-### A5. Verify the installer checksum on the VM
-
-```powershell
-Get-FileHash C:\ep\setup\postgresql-17.5-1-windows-x64.exe -Algorithm SHA256
-# compare with the hash recorded in A1
 ```
 
 ---
@@ -172,16 +154,17 @@ All commands below run in an **elevated (Administrator) PowerShell session**.
 
 ### B1. Pre-checks
 
-- Everything the project owns lives under a single project directory,
-  **`C:\ep`**: setup artifacts in `C:\ep\setup`, the data directory defaults
-  to `C:\ep\pgdata`, and backups to `C:\ep\pgbackups`. Only the PostgreSQL
-  binaries live outside it, in `C:\Program Files\PostgreSQL\<version>`
-  (EDB installer default). If a dedicated data disk is ever attached,
-  override with `-DataDir` / `-BackupDir`.
-- Ensure `C:` has enough free space for the installation, data, and
-  backups (installer ~1 GB installed, plus data growth and 14 days of dumps).
+- Confirm PostgreSQL is installed: `C:\Program Files\PostgreSQL\18` exists
+  and the service `postgresql-x64-18` is registered
+  (`Get-Service postgresql-x64-18`). If not, installation must be completed
+  first — it is a prerequisite for these scripts.
+- Ensure `C:` has enough free space for data growth and 14 days of dumps.
 - Decide two strong passwords: one for the `postgres` superuser, one for the
   application role `ep_app`. Store both in your password manager/vault.
+  **You do not need the original install-time superuser password** — if the
+  one you provide does not authenticate, step 02 resets the superuser
+  password to it (via a temporary, localhost-only `trust` window that is
+  always rolled back).
 
 ### B2. Unblock the scripts (files copied from another machine may be blocked)
 
@@ -195,12 +178,11 @@ Get-ChildItem C:\ep\setup\provision -Recurse -File | Unblock-File
 cd C:\ep\setup\provision
 
 .\provision-postgres.ps1 `
-    -InstallerPath C:\ep\setup\postgresql-17.5-1-windows-x64.exe `
     -SuperPassword '<superuser-password>' `
     -AppPassword   '<ep_app-password>'
 ```
 
-With an internal-CA certificate (A3), add:
+With an internal-CA certificate (A2), add:
 
 ```powershell
     -SslCertPath C:\ep\setup\certs\server.crt `
@@ -215,10 +197,10 @@ What you end up with:
 
 | Item          | Value                                                        |
 |---------------|--------------------------------------------------------------|
-| Service       | `postgresql-x64-17`, automatic start                         |
-| Data dir      | `C:\ep\pgdata`                                               |
+| Service       | `postgresql-x64-18`, automatic start                         |
+| Data dir      | auto-detected (EDB default: `C:\Program Files\PostgreSQL\18\data`) |
 | Database      | `ep`, owned by role `ep_app`, PUBLIC access revoked          |
-| Schema        | 6 tables (workspaces, notes, linked tables, chat history)    |
+| Schema        | 6 tables, each verified present (workspaces, table_notes, column_notes, linked_tables, chat_conversations, chat_messages) |
 | Access        | **localhost only** — no firewall port open, no network HBA   |
 | Backups       | nightly 02:00 `pg_dump` to `C:\ep\pgbackups`, 14-day retention |
 | Logs          | csvlog in the data directory, statements >500 ms logged      |
@@ -228,20 +210,18 @@ What you end up with:
 1. Read the `STEP FAILED [name]: <reason>` message (also in the transcript).
 2. Fix the cause (e.g. free up disk space, free the port, correct a path).
 3. Re-run — either the whole orchestrator (all steps are idempotent and
-   skip/no-op what is already done) or just the failed step, e.g.:
+   skip/no-op what is already done, so a full fresh-setup re-run is always
+   safe) or just the failed step, e.g.:
 
    ```powershell
    .\steps\05-database.ps1 -SuperPassword '<pw>' -AppPassword '<pw>'
    ```
 
-   Installer failures additionally print the tail of the EDB installer log
-   from `%TEMP%`.
-
 ### B5. Manual sanity checks (optional)
 
 ```powershell
-Get-Service postgresql-x64-17                          # Running
-& 'C:\Program Files\PostgreSQL\17\bin\psql.exe' -h localhost -U ep_app -d ep -c '\dt'   # 6 tables
+Get-Service postgresql-x64-18                          # Running
+& 'C:\Program Files\PostgreSQL\18\bin\psql.exe' -h localhost -U ep_app -d ep -c '\dt'   # 6 tables
 Get-ScheduledTask -TaskName 'PostgreSQL nightly backup (ep)'                            # Ready
 ```
 
@@ -286,12 +266,13 @@ psql "postgresql://ep_app:<password>@<vm-host>:5432/ep?sslmode=require" -c "SELE
 | Task                     | How                                                                 |
 |--------------------------|---------------------------------------------------------------------|
 | Restore a backup         | `pg_restore -h localhost -U postgres -d ep --clean --if-exists <file>.dump` |
+| Forgotten superuser pw   | re-run `steps\02-credentials.ps1 -SuperPassword '<new-pw>'` (resets it safely) |
 | Rotate app password      | re-run `steps\05-database.ps1` with the new `-AppPassword` (resets it), then update the app secret |
 | Change allowed subnet    | re-run `steps\07-network.ps1` with the new `-AllowedCidr`           |
 | Add/replace TLS cert     | re-run `steps\04-ssl.ps1 -SslCertPath ... -SslKeyPath ... -RestartService` |
 | Re-apply schema changes  | update `schema.sql`, re-run `steps\06-schema.ps1` (DDL is idempotent) |
 | Check backup history     | `C:\ep\pgbackups\backup.log`                                        |
-| Server logs              | `C:\ep\pgdata\log\*.csv`                                            |
+| Server logs              | `<data-dir>\log\*.csv`                                              |
 
 **Windows Update note:** the VM is a single point of failure; a reboot briefly
 interrupts saved notes/chat history (the app's core endpoint-testing features

@@ -4,48 +4,54 @@
     Endpoint Connection Tester (ep) application.
 
 .DESCRIPTION
+    Installation is a PREREQUISITE: PostgreSQL is expected to already be
+    installed at C:\Program Files\PostgreSQL\<version> (default 18) with
+    its Windows service registered. This orchestrator configures that
+    existing installation - it never runs an installer.
+
     Thin orchestrator over the standalone step scripts in steps/:
 
-      01-preflight.ps1    admin/disk/port/installer checks
-      02-install.ps1      unattended EDB install (skipped with -SkipInstall)
+      01-preflight.ps1    admin/installation/service/schema checks
+      02-credentials.ps1  ensure superuser password works (reset if unknown)
       03-configure.ps1    ALTER SYSTEM tuning (localhost-only listen)
       04-ssl.ps1          TLS cert/key (provided or self-signed)
       05-database.ps1     app role + database, PUBLIC revoked
-      06-schema.ps1       apply schema.sql as the app role
+      06-schema.ps1       apply schema.sql, verify all tables exist
       07-network.ps1      pg_hba + firewall + listen '*' (ONLY if -AllowedCidr)
       08-backup-task.ps1  nightly pg_dump Scheduled Task
-      09-verify.ps1       round-trip check as the app role
+      09-verify.ps1       tables + round-trip check as the app role
 
     Every step is idempotent and independently runnable, so a failure can be
     fixed and resumed by re-running this orchestrator - or by running the
-    failed step script directly. Each step exits non-zero on failure; the
-    orchestrator stops at the first failure and reports which step failed.
-    A full transcript is written under %ProgramData%\ep-postgres\logs.
+    failed step script directly. The whole flow can be re-run at any time
+    as part of a fresh setup: existing credentials are never assumed (the
+    superuser password is reset if the provided one does not authenticate,
+    and the app role password is always set to the provided value). Each
+    step exits non-zero on failure; the orchestrator stops at the first
+    failure and reports which step failed. A full transcript is written
+    under %ProgramData%\ep-postgres\logs.
 
     By default the database stays localhost-only. Network access is the
     deliberate, separate connectivity phase: run steps\07-network.ps1 (or
     re-run this script with -AllowedCidr).
 
-.PARAMETER InstallerPath
-    Path to the EDB PostgreSQL installer exe, copied to the VM. Required
-    unless the service is already installed.
-
 .PARAMETER PgVersion
-    Major version being installed (derives install dir and service name).
-    Default: 17.
+    Major version of the pre-installed PostgreSQL (derives the install dir
+    C:\Program Files\PostgreSQL\<version> and the service name).
+    Default: 18.
 
 .PARAMETER DataDir
-    PostgreSQL data directory. Default: C:\ep\pgdata - everything the
-    project owns lives under the C:\ep project directory (the VM has a
-    single C: drive; the PostgreSQL binaries themselves install to
-    C:\Program Files\PostgreSQL). Point this at a dedicated data disk if
-    one is ever attached.
+    PostgreSQL data directory. When omitted it is auto-detected from the
+    service registration (falling back to the EDB default
+    C:\Program Files\PostgreSQL\<version>\data).
 
 .PARAMETER Port
     TCP port for PostgreSQL. Default: 5432.
 
 .PARAMETER SuperPassword
-    Password for the 'postgres' superuser. Required.
+    Password for the 'postgres' superuser. Required. If it does not
+    authenticate (forgotten / unknown install-time password), step 02
+    resets the superuser password to this value.
 
 .PARAMETER AppDbName
     Application database name. Default: ep.
@@ -54,7 +60,8 @@
     Application login role. Default: ep_app.
 
 .PARAMETER AppPassword
-    Password for the application role. Required.
+    Password for the application role. Required. Always applied: the role
+    is created with it, or its password is reset to it.
 
 .PARAMETER AllowedCidr
     CIDR allowed to reach the database (e.g. the Kubernetes node subnet
@@ -77,16 +84,12 @@
 .PARAMETER BackupRetentionDays
     Days of backups to keep. Default: 14.
 
-.PARAMETER SkipInstall
-    Skip the installer step (for re-runs against an existing installation).
-
 .PARAMETER SkipBackupTask
     Skip registering the nightly backup Scheduled Task.
 
 .EXAMPLE
-    # Phase 1 - provision the database, localhost-only (connectivity later):
+    # Phase 1 - provision the pre-installed database, localhost-only:
     .\provision-postgres.ps1 `
-        -InstallerPath C:\ep\setup\postgresql-17.5-1-windows-x64.exe `
         -SuperPassword '<superuser-password>' `
         -AppPassword   '<ep_app-password>'
 
@@ -101,13 +104,12 @@
     Windows PowerShell 5.1+ or PowerShell 7+.
 #>
 # Plain-text password parameters are deliberate: psql/pg_dump consume them via
-# PGPASSWORD/pgpass.conf, and the EDB installer requires --superpassword as text.
+# PGPASSWORD/pgpass.conf.
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
 [CmdletBinding()]
 param(
-    [string]$InstallerPath,
-    [string]$PgVersion = "17",
-    [string]$DataDir = "C:\ep\pgdata",
+    [string]$PgVersion = "18",
+    [string]$DataDir,
     [int]$Port = 5432,
     [Parameter(Mandatory = $true)][string]$SuperPassword,
     [string]$AppDbName = "ep",
@@ -119,7 +121,6 @@ param(
     [string]$SchemaFile = (Join-Path $PSScriptRoot "schema.sql"),
     [string]$BackupDir = "C:\ep\pgbackups",
     [int]$BackupRetentionDays = 14,
-    [switch]$SkipInstall,
     [switch]$SkipBackupTask
 )
 
@@ -129,6 +130,7 @@ $ErrorActionPreference = "Stop"
 
 $stepsDir = Join-Path $PSScriptRoot "steps"
 $ctx = Get-PgContext -PgVersion $PgVersion
+if (-not $DataDir) { $DataDir = Get-PgDataDir -PgVersion $PgVersion }
 
 # Runs one step script and stops the pipeline on its first failure.
 function Invoke-ProvisionStep {
@@ -153,15 +155,12 @@ Start-Transcript -Path $transcriptPath | Out-Null
 
 try {
     Invoke-ProvisionStep "01-preflight.ps1" @{
-        PgVersion = $PgVersion; DataDir = $DataDir; Port = $Port
-        InstallerPath = $InstallerPath; SchemaFile = $SchemaFile; SkipInstall = $SkipInstall
+        PgVersion = $PgVersion; Port = $Port; SchemaFile = $SchemaFile
     }
 
-    if (-not $SkipInstall) {
-        Invoke-ProvisionStep "02-install.ps1" @{
-            InstallerPath = $InstallerPath; PgVersion = $PgVersion; DataDir = $DataDir
-            Port = $Port; SuperPassword = $SuperPassword
-        }
+    Invoke-ProvisionStep "02-credentials.ps1" @{
+        PgVersion = $PgVersion; Port = $Port
+        SuperPassword = $SuperPassword; DataDir = $DataDir
     }
 
     Invoke-ProvisionStep "03-configure.ps1" @{

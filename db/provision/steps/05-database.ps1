@@ -13,7 +13,7 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "")]
 [CmdletBinding()]
 param(
-    [string]$PgVersion = "17",
+    [string]$PgVersion = "18",
     [int]$Port = 5432,
     [Parameter(Mandatory = $true)][string]$SuperPassword,
     [string]$AppDbName = "ep",
