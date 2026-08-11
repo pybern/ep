@@ -49,6 +49,7 @@ flowchart LR
 | --- | --- | --- |
 | Browser UI | SQL editor, catalog browser, endpoint testers, chat, Focus UI | `app/page.tsx`, `app/chat/page.tsx`, `components/` |
 | Browser persistence | Workspaces, notes, linked tables, conversations, credentials | `lib/db.ts`, `lib/credential-store.ts` |
+| Provisioned persistence (not wired into runtime) | PostgreSQL schema and Windows/offline provisioning for user-scoped workspaces and chat | `db/provision/schema.sql`, `db/provision/` |
 | Next.js BFF | Validates some requests and relays calls to external systems | `app/api/` |
 | AI chat | Streams text from a user-selected compatible model | `app/api/chat/route.ts`, `app/api/chatbot/route.ts` |
 | Focus workflow | Produces mock rows, a chart specification, and an insights report | `app/api/focus/{run,build,report}/route.ts` |
@@ -304,9 +305,9 @@ The browser can render these as a timeline and reconnect by `runId`. The existin
 
 ## Persistence choice
 
-The current Dexie store is appropriate for a single-user, local-first utility. It is not sufficient for shared runs, approvals, audit history, or cross-device resume.
+The current Dexie store is appropriate for a single-user, local-first utility. It is not sufficient for shared runs, approvals, audit history, or cross-device resume. The repository already contains a user-scoped PostgreSQL schema and provisioning workflow for workspaces, notes, linked tables, and chat history, but no TypeScript runtime adapter uses it yet.
 
-Use a server-side system of record when any of those capabilities are required. For the default standalone Docker/Kubernetes profile, use a self-hostable relational database and server-sent run events. Convex is an optional managed profile when automatic reactive run/event queries and typed state transitions are preferable to operating polling or WebSocket infrastructure. Keep the orchestration interfaces storage-neutral so either adapter can implement them.
+Use a server-side system of record when any of those capabilities are required. For the default standalone Docker/Kubernetes profile, extend the existing PostgreSQL design with agent-run tables and server-sent run events rather than introducing a second relational model. Convex is an optional managed profile when automatic reactive run/event queries and typed state transitions are preferable to operating polling or WebSocket infrastructure. Keep the orchestration interfaces storage-neutral so either adapter can implement them.
 
 Suggested server entities:
 
