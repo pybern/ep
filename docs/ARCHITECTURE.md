@@ -201,6 +201,8 @@ lib/
 
 Route handlers should only authenticate, validate, call an application service, and map the result to HTTP. Prompts, model configuration, retries, parsing, and business rules belong in server modules that can be tested without HTTP.
 
+Use agent loops only where the model must choose among tools or revise a plan. The current data, visualization, and reporting operations are bounded transformations; keep them as single structured-generation stages with deterministic validation. Renaming every stage an “agent” or wrapping it in a tool loop would increase cost and failure modes without adding autonomy.
+
 ### Agent definition
 
 Each agent should be a versioned, typed definition rather than an informal prompt embedded in a route:
@@ -335,6 +337,8 @@ These controls are prerequisites before exposing the server routes to untrusted 
 9. Treat model output as untrusted. Validate it before rendering or passing it to another tool, and never evaluate generated JavaScript.
 10. Redact credentials, authorization headers, tokens, query values, and sensitive row data from logs and traces.
 11. Classify and minimize workspace notes, code, metadata, and result rows before model calls. Show the destination host and require disclosure approval for data that can leave the trusted environment.
+
+Persist endpoint host, model, policy, and a non-reversible credential fingerprint with a run for audit and deduplication; never persist the model API key in run inputs, artifacts, or events.
 
 ## Observability and evaluation
 
