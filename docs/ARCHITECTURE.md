@@ -33,6 +33,9 @@ flowchart LR
   UI <--> IDB
   UI <--> LS
   UI --> API
+  UI -. client-mode requests .-> D
+  UI -. client-mode requests .-> L
+  UI -. client metadata request .-> A
   API --> Chat --> L
   API --> Focus --> L
   API --> Proxy
@@ -51,6 +54,8 @@ flowchart LR
 | Focus workflow | Produces mock rows, a chart specification, and an insights report | `app/api/focus/{run,build,report}/route.ts` |
 | Dremio integration | Catalog discovery and SQL job polling | `app/api/dremio/` |
 | Packaging | Standalone Node container and Kubernetes manifests | `Dockerfile`, `k8s/`, `.github/workflows/` |
+
+The API and OpenAI testers can deliberately call targets directly from the browser, and the ADFS tester can fetch metadata directly. Client mode is useful for reproducing CORS behavior, but it bypasses server-side egress policy, audit, quotas, and redaction. The UI must make that trust-boundary change explicit.
 
 ### Current Focus sequence
 
@@ -84,6 +89,7 @@ This is a multi-step model pipeline, but it is not yet a true agent runtime. The
 
 - The application has a clear browser/BFF split and is already packaged as a non-root standalone container.
 - AI SDK 6 streaming and part-based message rendering are in use.
+- The text-only chat transport is simple and broadly compatible with custom providers.
 - Focus request and response payloads use Zod contracts in `lib/focus-types.ts`.
 - Dremio job polling, workspace notes, and selected schema context provide useful foundations for data tools.
 - The UI exposes each Focus stage and its raw model response, which is useful for debugging.
@@ -98,9 +104,16 @@ This is a multi-step model pipeline, but it is not yet a true agent runtime. The
 5. **Client-owned orchestration is fragile.** Refreshing or closing the tab loses Focus progress. A partial failure requires restarting manually, and the server cannot enforce a consistent policy across steps.
 6. **Synthetic output is presented as a run result.** `/api/focus/run` asks a model to invent rows. On parse failure it silently returns a fixed dataset with HTTP 200. This can make fabricated evidence appear successful.
 7. **Repeated provider code.** URL normalization, TLS handling, request construction, response parsing, and error mapping are duplicated across chat and Focus routes.
-8. **Weak structured generation.** Several agents request “ONLY JSON” and then use `JSON.parse`, even though AI SDK 6 supports schema-constrained structured output.
+8. **Weak structured generation.** Several agents request “ONLY JSON” and then use `JSON.parse`. AI SDK 6 can request schema-constrained output from compatible providers, while all providers still require strict local validation.
 9. **Limited operational controls.** There are console metrics for chat, but no correlation ID, structured trace, retry policy, idempotency key, rate limit, cost budget, or evaluation suite.
 10. **Large mixed-responsibility client module.** `app/chat/page.tsx` combines persistence, transport, workflow orchestration, parsing, metrics, settings, and multiple major views. This raises regression risk.
+11. **Known dependency exposure.** The locked production tree currently reports 17 audit findings (7 high), including Next.js, `undici`, PostCSS, and transitive rendering/parser dependencies. `npm ci` also warns that Next.js 16.0.7 is affected by a published security issue.
+12. **Lint is not operational.** `npm run lint` fails while loading the legacy `FlatCompat` configuration under ESLint 9, so regressions are not currently checked even though lint is declared as a project script.
+13. **Dremio SQL is unrestricted.** `app/api/dremio/sql/route.ts` accepts arbitrary statements without read-only or single-statement enforcement. It also recognizes only three nonterminal job states, and the stored `projectId` is not applied to requests.
+14. **Model data egress is implicit.** Code, workspace notes, catalog metadata, and sampled rows can be sent to any user-selected model host without classification, minimization, redaction, or an explicit disclosure gate.
+15. **Provider URL behavior is inconsistent.** The model-test route can append a second `/v1`, while chat routes do not all honor `urlMode`. A connection can test successfully in one feature and fail in another.
+16. **Chat loses rich agent events.** `TextStreamChatTransport` and `toTextStreamResponse()` expose text, but not typed tool parts, provider usage, finish reasons, or approval events. A future agent UI needs the UI-message protocol or the separate normalized event stream proposed below.
+17. **Split Kubernetes manifests do not compose.** `k8s/service.yaml` selects `app: connection-tester`, while `k8s/deployment.yaml` labels pods `app: ep`. Applying them individually produces a Service with no endpoints; `k8s/all-in-one.yaml` uses the matching selector.
 
 ## Target architecture
 
@@ -293,7 +306,7 @@ The browser can render these as a timeline and reconnect by `runId`. The existin
 
 The current Dexie store is appropriate for a single-user, local-first utility. It is not sufficient for shared runs, approvals, audit history, or cross-device resume.
 
-Use a server-side system of record when any of those capabilities are required. Convex is a strong fit for this project because reactive run/event queries can replace custom polling or WebSocket infrastructure, while mutations provide typed state transitions. A conventional relational database plus server-sent events is also valid if infrastructure policy requires it. Keep the orchestration interfaces storage-neutral so either adapter can implement them.
+Use a server-side system of record when any of those capabilities are required. For the default standalone Docker/Kubernetes profile, use a self-hostable relational database and server-sent run events. Convex is an optional managed profile when automatic reactive run/event queries and typed state transitions are preferable to operating polling or WebSocket infrastructure. Keep the orchestration interfaces storage-neutral so either adapter can implement them.
 
 Suggested server entities:
 
@@ -309,7 +322,7 @@ These controls are prerequisites before exposing the server routes to untrusted 
 
 1. Authenticate every route and enforce workspace/connection ownership.
 2. Replace arbitrary target URLs with saved, server-approved connection IDs.
-3. Resolve hostnames server-side and reject loopback, link-local, private, multicast, metadata, and rebinding targets unless an administrator explicitly allowlists a private CIDR.
+3. Resolve hostnames server-side and reject loopback, link-local, private, multicast, metadata, and rebinding targets unless an administrator explicitly allowlists a private CIDR. Disable redirects or revalidate every redirect URL and connect-time resolved IP.
 4. Strip hop-by-hop and sensitive caller-controlled headers. Set authorization headers from the selected server-side connection.
 5. Store secrets in a secret manager or encrypted server store; return only metadata and last-four fingerprints to the browser.
 6. Disable TLS bypass by default. If internal PKI is required, mount the trusted CA bundle. Any temporary bypass must be admin-controlled, environment-gated, and audited.
@@ -317,6 +330,7 @@ These controls are prerequisites before exposing the server routes to untrusted 
 8. Apply read-only SQL parsing and allow only a single statement for autonomous execution. Mutations always require explicit approval.
 9. Treat model output as untrusted. Validate it before rendering or passing it to another tool, and never evaluate generated JavaScript.
 10. Redact credentials, authorization headers, tokens, query values, and sensitive row data from logs and traces.
+11. Classify and minimize workspace notes, code, metadata, and result rows before model calls. Show the destination host and require disclosure approval for data that can leave the trusted environment.
 
 ## Observability and evaluation
 
@@ -361,12 +375,16 @@ Model-graded evaluations can supplement, but should not replace, those checks.
 - Move credentials out of `localStorage` for shared deployments.
 - Stop returning fabricated fallback rows as successful execution; expose `simulation` and `degraded` states explicitly.
 - Make verified TLS the default for every integration.
+- Upgrade vulnerable runtime dependencies, beginning with patched Next.js and `undici` releases, and verify the upgrade with the production audit.
+- Replace the compatibility-based ESLint configuration with a supported flat configuration and make lint, type-check, tests, and the production audit required CI checks.
+- Align labels and selectors across the split Kubernetes manifests and add a deployment smoke test.
 
 ### P1 — establish the application architecture
 
 - Extract the repeated OpenAI-compatible client and error mapping into `lib/server/providers/`.
+- Normalize base URLs, full endpoints, and `urlMode` once in that adapter and reuse it for connection tests, chat, and agents.
 - Move embedded prompts into a versioned agent registry.
-- Use AI SDK schema-constrained output for Focus run/build stages.
+- Use AI SDK schema-constrained output for Focus run/build stages when the selected provider declares structured-output support. Retain strict Zod validation and an explicit compatibility error or labelled fallback for other endpoints.
 - Split `app/chat/page.tsx` into chat, Focus, settings, persistence, and run-timeline modules.
 - Add unit tests for provider URL handling, contracts, fallback behavior, and egress policy.
 
