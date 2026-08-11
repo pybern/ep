@@ -115,6 +115,9 @@ This is a multi-step model pipeline, but it is not yet a true agent runtime. The
 15. **Provider URL behavior is inconsistent.** The model-test route can append a second `/v1`, while chat routes do not all honor `urlMode`. A connection can test successfully in one feature and fail in another.
 16. **Chat loses rich agent events.** `TextStreamChatTransport` and `toTextStreamResponse()` expose text, but not typed tool parts, provider usage, finish reasons, or approval events. A future agent UI needs the UI-message protocol or the separate normalized event stream proposed below.
 17. **Split Kubernetes manifests do not compose.** `k8s/service.yaml` selects `app: connection-tester`, while `k8s/deployment.yaml` labels pods `app: ep`. Applying them individually produces a Service with no endpoints; `k8s/all-in-one.yaml` uses the matching selector.
+18. **SQL-assistant context is unbounded.** Selected schemas and notes are interpolated directly into the SQL system prompt without a token budget, and detailed table paths are written to application logs.
+19. **AI surfaces have diverged.** `app/api/chat/report/route.ts` has no caller, while Focus uses a separate report route. Keeping unused, duplicated agent endpoints increases policy and prompt drift.
+20. **Delivery checks and runtime health are incomplete.** Image pipelines do not gate on tests, types, lint, or audits. Kubernetes probes use the full `/` page instead of a lightweight health endpoint, and fixed 512 MiB limits have not been validated against concurrent 60-second AI requests.
 
 ## Target architecture
 
@@ -385,7 +388,9 @@ Model-graded evaluations can supplement, but should not replace, those checks.
 - Extract the repeated OpenAI-compatible client and error mapping into `lib/server/providers/`.
 - Normalize base URLs, full endpoints, and `urlMode` once in that adapter and reuse it for connection tests, chat, and agents.
 - Move embedded prompts into a versioned agent registry.
+- Apply explicit token budgets and deterministic prioritization to conversation, schema, notes, and sampled-row context.
 - Use AI SDK schema-constrained output for Focus run/build stages when the selected provider declares structured-output support. Retain strict Zod validation and an explicit compatibility error or labelled fallback for other endpoints.
+- Remove the unused chat report route or make both report experiences call one versioned reporter agent.
 - Split `app/chat/page.tsx` into chat, Focus, settings, persistence, and run-timeline modules.
 - Add unit tests for provider URL handling, contracts, fallback behavior, and egress policy.
 
@@ -395,6 +400,7 @@ Model-graded evaluations can supplement, but should not replace, those checks.
 - Persist run state, attempts, artifacts, and events.
 - Add idempotency, bounded retries, cancellation, token budgets, and approval gates.
 - Replace the browser's run/build/report fetch chain with a reconnectable event timeline.
+- Add a lightweight readiness/health route, validate resource limits under concurrent streams, and gate image publication on the required quality checks.
 
 ### P3 — grounded tools and quality loops
 
