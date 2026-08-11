@@ -2,6 +2,10 @@
 
 A comprehensive tool for testing API endpoints and OpenAI-compatible APIs with support for both client-side and server-side request modes.
 
+## Architecture
+
+See [Architecture and Agentic Workflow](docs/ARCHITECTURE.md) for the current system map, security sweep, target agent runtime, and prioritized improvement plan.
+
 ## Features
 
 - **API Testing**: Test any HTTP endpoint with full control over method, headers, and body
