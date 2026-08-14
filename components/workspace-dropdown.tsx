@@ -14,7 +14,6 @@ import {
 import { useWorkspaces, useActiveWorkspace } from "@/lib/use-workspace"
 import { cn } from "@/lib/utils"
 import {
-  FolderOpen,
   Database,
   Check,
   ChevronDown,

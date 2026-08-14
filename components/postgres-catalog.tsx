@@ -18,7 +18,6 @@ import { Button } from "@/components/ui/button"
 import {
   ChevronRight,
   ChevronDown,
-  Database,
   Folder,
   FolderOpen,
   Table2,
@@ -52,6 +51,7 @@ import { TableNotesModal } from "@/components/table-notes-modal"
 
 interface PostgresCatalogProps {
   credentials: PostgresCredentials | null
+  source?: "postgres" | "supabase"
   onTableSelect?: (tablePath: string) => void
   onOpenSettings?: () => void
   selectionEnabled?: boolean
@@ -137,6 +137,7 @@ function formatBytes(n: number): string {
 
 export function PostgresCatalog({
   credentials,
+  source = "postgres",
   onTableSelect,
   onOpenSettings,
   selectionEnabled = false,
@@ -147,6 +148,16 @@ export function PostgresCatalog({
   onWorkspaceChange,
   showWorkspaceDropdown = true,
 }: PostgresCatalogProps) {
+  const isAvailable = source === "supabase" || Boolean(credentials)
+  const catalogEndpoint =
+    source === "supabase" ? "/api/supabase/catalog" : "/api/postgres/catalog"
+  const catalogBody = useCallback(
+    (body: Record<string, unknown>) => ({
+      ...(source === "postgres" && credentials ? pgBody(credentials) : {}),
+      ...body,
+    }),
+    [credentials, source],
+  )
   const [schemas, setSchemas] = useState<PgSchema[]>([])
   const [loadingSchemas, setLoadingSchemas] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -181,14 +192,14 @@ export function PostgresCatalog({
   }, [activeWorkspaceId])
 
   const fetchSchemas = useCallback(async () => {
-    if (!credentials) return
+    if (!isAvailable) return
     setLoadingSchemas(true)
     setError(null)
     try {
-      const res = await fetch("/api/postgres/catalog", {
+      const res = await fetch(catalogEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...pgBody(credentials), level: "schemas" }),
+        body: JSON.stringify(catalogBody({ level: "schemas" })),
       })
       const data = await res.json()
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`)
@@ -198,41 +209,44 @@ export function PostgresCatalog({
     } finally {
       setLoadingSchemas(false)
     }
-  }, [credentials])
+  }, [catalogBody, catalogEndpoint, isAvailable])
 
   const fetchTables = useCallback(
     async (schema: string) => {
-      if (!credentials) return
+      if (!isAvailable) return []
       setLoadingSchema((m) => ({ ...m, [schema]: true }))
       try {
-        const res = await fetch("/api/postgres/catalog", {
+        const res = await fetch(catalogEndpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...pgBody(credentials), level: "tables", schema }),
+          body: JSON.stringify(catalogBody({ level: "tables", schema })),
         })
         const data = await res.json()
         if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`)
-        setTablesBySchema((m) => ({ ...m, [schema]: data.tables ?? [] }))
+        const tables = (data.tables ?? []) as PgTable[]
+        setTablesBySchema((m) => ({ ...m, [schema]: tables }))
+        return tables
       } catch (e) {
         console.error("[PostgresCatalog] tables load error:", e)
         setTablesBySchema((m) => ({ ...m, [schema]: [] }))
+        return []
       } finally {
         setLoadingSchema((m) => ({ ...m, [schema]: false }))
       }
     },
-    [credentials],
+    [catalogBody, catalogEndpoint, isAvailable],
   )
 
   const fetchColumns = useCallback(
     async (schema: string, table: string): Promise<PgColumn[]> => {
-      if (!credentials) return []
+      if (!isAvailable) return []
       const key = `${schema}.${table}`
       setLoadingTable((m) => ({ ...m, [key]: true }))
       try {
-        const res = await fetch("/api/postgres/catalog", {
+        const res = await fetch(catalogEndpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...pgBody(credentials), level: "columns", schema, table }),
+          body: JSON.stringify(catalogBody({ level: "columns", schema, table })),
         })
         const data = await res.json()
         if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`)
@@ -247,12 +261,12 @@ export function PostgresCatalog({
         setLoadingTable((m) => ({ ...m, [key]: false }))
       }
     },
-    [credentials],
+    [catalogBody, catalogEndpoint, isAvailable],
   )
 
   useEffect(() => {
-    if (credentials) fetchSchemas()
-  }, [credentials, fetchSchemas])
+    if (isAvailable) fetchSchemas()
+  }, [isAvailable, fetchSchemas])
 
   const toggleSchema = useCallback(
     (schema: string) => {
@@ -287,7 +301,7 @@ export function PostgresCatalog({
 
   const toggleSelectionForTable = useCallback(
     async (schema: string, table: PgTable) => {
-      if (!onSelectionChange || !credentials) return
+      if (!onSelectionChange || !isAvailable) return
       const path = `${schema}.${table.name}`
       const key = path
       const kindToDatasetType = table.kind === "view" || table.kind === "materialized_view" ? "VIRTUAL" : "PHYSICAL_DATASET"
@@ -316,12 +330,12 @@ export function PostgresCatalog({
         onSelectionChange(next)
       }
     },
-    [credentials, onSelectionChange, selectedItems, selectedMap, columnsByTable, fetchColumns],
+    [isAvailable, onSelectionChange, selectedItems, selectedMap, columnsByTable, fetchColumns],
   )
 
   const toggleSelectionForSchema = useCallback(
     async (schema: string) => {
-      if (!onSelectionChange || !credentials) return
+      if (!onSelectionChange || !isAvailable) return
       const containerKey = schema
       if (selectedMap.has(containerKey)) {
         onSelectionChange(selectedItems.filter((i) => i.path !== containerKey && !i.path.startsWith(containerKey + ".")))
@@ -331,8 +345,7 @@ export function PostgresCatalog({
       // Make sure tables are loaded
       let tables = tablesBySchema[schema]
       if (!tables) {
-        await fetchTables(schema)
-        tables = tablesBySchema[schema] || []
+        tables = await fetchTables(schema)
       }
 
       const newContainer: SelectedCatalogItem = {
@@ -376,10 +389,10 @@ export function PostgresCatalog({
       )
       onSelectionChange(current)
     },
-    [credentials, onSelectionChange, selectedItems, selectedMap, tablesBySchema, columnsByTable, fetchTables, fetchColumns],
+    [isAvailable, onSelectionChange, selectedItems, selectedMap, tablesBySchema, columnsByTable, fetchTables, fetchColumns],
   )
 
-  if (!credentials) {
+  if (!isAvailable) {
     return (
       <div className="flex flex-col items-center justify-center h-full p-6 text-center">
         <Leaf className="h-12 w-12 text-muted-foreground/30 mb-4" />
@@ -404,6 +417,7 @@ export function PostgresCatalog({
       <div className="flex items-center justify-between px-3 py-2 border-b border-border/50 shrink-0">
         <div className="flex items-center gap-1.5 text-sm font-medium min-w-0">
           <Leaf className="h-4 w-4 text-emerald-500 shrink-0" />
+          <span className="truncate">{source === "supabase" ? "Supabase" : "Postgres"}</span>
           {selectionEnabled && selectedCount > 0 && (
             <span className="text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-full shrink-0">
               {selectedCount}

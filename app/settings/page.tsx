@@ -36,6 +36,7 @@ import { AdfsTester } from "@/components/testers/adfs-tester"
 import { PostgresTester } from "@/components/testers/postgres-tester"
 import { TestHistory } from "@/components/test-history"
 import type { TestResult } from "@/components/connection-tester"
+import { useIntegrationDefaults } from "@/lib/use-integration-defaults"
 
 import {
   getDremioCredentials,
@@ -89,6 +90,7 @@ export default function SettingsPage() {
 function SettingsPageInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const { defaults } = useIntegrationDefaults()
 
   const initialTab = searchParams.get("tab") === "advanced" ? "advanced" : "setup"
   const initialFocus = (searchParams.get("focus") as StepId | null) ?? null
@@ -107,6 +109,8 @@ function SettingsPageInner() {
     setPg(getPostgresCredentials())
   }, [])
 
+  // Hydrate the browser-only credential store, then subscribe to changes.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     refresh()
     const onStorage = () => refresh()
@@ -119,6 +123,7 @@ function SettingsPageInner() {
       window.removeEventListener("postgres-credentials-updated", onStorage)
     }
   }, [refresh])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Auto-scroll to the focused step when the URL says so.
   useEffect(() => {
@@ -135,19 +140,23 @@ function SettingsPageInner() {
     () => [
       {
         id: "dremio",
-        title: "Dremio",
-        subtitle: "Data source for the SQL workbench and catalog sidebar",
+        title: defaults.supabase ? "Supabase" : "Data source",
+        subtitle: defaults.supabase
+          ? "Environment-backed investment datasets"
+          : "Configure Dremio as a manual fallback",
         icon: Database,
-        tint: "text-sky-500",
-        configured: !!dremio,
+        tint: "text-emerald-500",
+        configured: defaults.supabase || !!dremio,
       },
       {
         id: "ai",
-        title: "AI provider",
-        subtitle: "OpenAI-compatible endpoint used for chat, focus reports, and embeddings",
+        title: defaults.openzen ? "OpenCode Zen" : "AI provider",
+        subtitle: defaults.openzen
+          ? "Server-managed models for chat and Focus"
+          : "Configure an OpenAI-compatible fallback",
         icon: Sparkles,
         tint: "text-purple-500",
-        configured: !!openai,
+        configured: defaults.openzen || !!openai,
       },
       {
         id: "postgres",
@@ -159,7 +168,7 @@ function SettingsPageInner() {
         optional: true,
       },
     ],
-    [dremio, openai, pg],
+    [defaults.openzen, defaults.supabase, dremio, openai, pg],
   )
 
   const completedCount = steps.filter((s) => s.configured).length
@@ -210,7 +219,7 @@ function SettingsPageInner() {
             <Shield className="h-4 w-4 text-primary" />
             <h2 className="text-sm font-medium">Connection status</h2>
             <span className="text-[10px] text-muted-foreground ml-auto">
-              All credentials are stored in your browser&apos;s localStorage.
+              Environment defaults stay server-side; manual fallbacks are stored locally.
             </span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-accent/60 overflow-hidden">
@@ -300,7 +309,20 @@ function SettingsPageInner() {
               highlighted={focus === "dremio"}
               onNext={() => goToStep("ai")}
             >
-              <CredentialSettings onCredentialsChange={refresh} />
+              {defaults.supabase && (
+                <EnvironmentDefault
+                  title="Supabase is ready"
+                  description="The workbench opens the public, RLS-governed Supabase catalog automatically."
+                />
+              )}
+              <details className={defaults.supabase ? "mt-4" : ""} open={!defaults.supabase}>
+                <summary className="cursor-pointer text-xs text-muted-foreground">
+                  {defaults.supabase ? "Configure a manual Dremio fallback" : "Configure Dremio"}
+                </summary>
+                <div className="pt-4">
+                  <CredentialSettings onCredentialsChange={refresh} />
+                </div>
+              </details>
             </StepCard>
 
             <StepCard
@@ -310,7 +332,22 @@ function SettingsPageInner() {
               highlighted={focus === "ai"}
               onNext={() => goToStep("postgres")}
             >
-              <OpenAICredentialSettings onCredentialsChange={refresh} />
+              {defaults.openzen && (
+                <EnvironmentDefault
+                  title="OpenCode Zen is ready"
+                  description="Models are discovered automatically and the API key is never sent to the browser."
+                />
+              )}
+              <details className={defaults.openzen ? "mt-4" : ""} open={!defaults.openzen}>
+                <summary className="cursor-pointer text-xs text-muted-foreground">
+                  {defaults.openzen
+                    ? "Configure a manual OpenAI-compatible fallback"
+                    : "Configure an AI provider"}
+                </summary>
+                <div className="pt-4">
+                  <OpenAICredentialSettings onCredentialsChange={refresh} />
+                </div>
+              </details>
             </StepCard>
 
             <StepCard
@@ -390,6 +427,24 @@ function SettingsPageInner() {
         </Tabs>
       </div>
     </main>
+  )
+}
+
+function EnvironmentDefault({
+  title,
+  description,
+}: {
+  title: string
+  description: string
+}) {
+  return (
+    <div className="flex items-start gap-3 rounded-lg border border-success/30 bg-success/5 p-3">
+      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+      <div>
+        <p className="text-xs font-medium text-foreground">{title}</p>
+        <p className="mt-0.5 text-[11px] text-muted-foreground">{description}</p>
+      </div>
+    </div>
   )
 }
 

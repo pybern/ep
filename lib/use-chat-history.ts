@@ -4,8 +4,6 @@ import { useLiveQuery } from "dexie-react-hooks"
 import { useCallback } from "react"
 import {
   db,
-  type ChatConversation,
-  type ChatMessage,
   createChatConversation,
   updateChatConversation,
   deleteChatConversation,

@@ -44,6 +44,8 @@ export interface ModelSelectorProps {
   showRefresh?: boolean
   /** Optional list of extra, always-available suggestions (e.g. common defaults). */
   suggestions?: string[]
+  /** Disable free-form model ids when the server validates a fixed catalog. */
+  allowCustom?: boolean
   id?: string
   className?: string
 }
@@ -72,6 +74,7 @@ export function ModelSelector({
   placeholder = "Pick or type a model...",
   showRefresh = true,
   suggestions = [],
+  allowCustom = true,
   id,
   className,
 }: ModelSelectorProps) {
@@ -167,7 +170,9 @@ export function ModelSelector({
   }, [models, suggestions])
 
   const showCustomOption =
-    normalizedQuery.length > 0 && !catalogModels.some((m) => m.id === normalizedQuery)
+    allowCustom
+    && normalizedQuery.length > 0
+    && !catalogModels.some((m) => m.id === normalizedQuery)
 
   return (
     <div className={cn("flex items-center gap-2", className)}>
@@ -273,7 +278,9 @@ export function ModelSelector({
               {!loading && catalogModels.length === 0 && !error && (
                 <CommandEmpty>
                   <div className="text-xs text-muted-foreground px-3 py-2">
-                    No catalogue available yet. Click refresh or type a model id below.
+                    {allowCustom
+                      ? "No catalogue available yet. Click refresh or type a model id below."
+                      : "No models are currently available."}
                   </div>
                 </CommandEmpty>
               )}

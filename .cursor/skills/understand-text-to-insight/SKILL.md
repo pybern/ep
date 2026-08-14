@@ -1,6 +1,6 @@
 ---
 name: understand-text-to-insight
-description: Understand and safely evolve the ep text-to-insight project, including Dremio data connectors, OpenAI-compatible LLM providers, schema-aware chat, text-to-SQL, workspaces, query execution, Focus, credentials, and architecture. Use when planning, implementing, debugging, reviewing, or explaining any project behavior involving data sources, AI chat, SQL insights, providers, persistence, authentication, or integration boundaries.
+description: Understand and safely evolve the ep text-to-insight project, including Dremio and Supabase datasets, OpenZen and OpenAI-compatible LLM providers, schema-aware chat, text-to-SQL, workspaces, query execution, Focus, credentials, and architecture. Use when planning, implementing, debugging, reviewing, or explaining any project behavior involving data sources, datasets, AI chat, model discovery, SQL insights, providers, persistence, authentication, or integration boundaries.
 ---
 
 # Understand the Text-to-Insight Project
@@ -47,7 +47,7 @@ closed-loop autonomous query agent.
 - `app/api/dremio/sql/route.ts`: submit, poll, and fetch Dremio query results.
 - `app/api/chat/route.ts`: schema-aware SQL assistant.
 - `app/api/chatbot/route.ts`: general chat used by `/chat`.
-- `app/api/focus/*`: mock data, chart-spec, and report prototype.
+- `app/api/focus/*`: mock data and chart-spec prototype.
 - `app/api/openai/*`: OpenAI-compatible connectivity/proxy routes.
 - `app/api/adfs/*`: OIDC metadata and token exchange experiment.
 - `app/api/proxy/route.ts`: generic outbound HTTP proxy.
@@ -73,17 +73,104 @@ closed-loop autonomous query agent.
 - There is no Convex backend in this repository.
 - There is no application server database; durable-looking product state is
   browser-local Dexie state.
-- Dremio is the only real analytical data-source integration.
+- Supabase is the zero-configuration, read-only catalog/context integration;
+  Dremio and direct Postgres remain the arbitrary SQL execution integrations.
 - JDBC and ODBC testers validate formats but do not connect.
 - `dataContext` is embedded directly in the model prompt; there are no
   embeddings, vector store, ingestion pipeline, or retrieval ranking.
 - The SQL assistant does not call Dremio. SQL generation and execution are
   separate user actions.
+- In Supabase mode, selected public investment tables can be queried through a
+  validated, bounded PostgREST plan before the assistant writes its answer.
+  This is not arbitrary SQL execution.
+- When that plan returns rows, both chat routes deterministically build a
+  validated json-render spec from those rows.
+  `lib/ai/investment-insight-catalog.ts` owns that mapping and the only allowed
+  UI catalog; `components/insights/investment-insight-renderer.tsx` owns the
+  React/Recharts implementations. Keep data-derived UI limited to verified
+  rows; never render model-generated React or JavaScript.
 - Focus generates or falls back to mock rows. It does not query Dremio.
 - ADFS does not currently gate the application or authorize source access.
 - Dremio PATs and LLM keys are stored in the browser and sent to route handlers.
 - `.env.local` values are secrets. Never read them unless a task truly requires
   their names, and never print, quote, log, or commit their values.
+
+## Environment-backed defaults
+
+The project environment provides these integration variables:
+
+- `SUPABASE_SECRET_KEY`: server-only Supabase administrative credential.
+- `OPENZEN_API_KEY`: server-only credential for the default OpenZen model
+  provider.
+- `NEXT_PUBLIC_SUPABASE_URL`: public Supabase project URL.
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`: public Supabase publishable key.
+
+Use the exact name `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`; do not shorten it to
+`NEXT_PUBLIC_PUBLISHABLE_KEY`.
+
+These variables define the default experience:
+
+1. Users create and manage datasets backed by Supabase instead of having to
+   configure a Dremio instance before using the product.
+2. Chat displays models discovered from OpenZen and can use a selected model
+   without asking the user to manually enter provider credentials.
+3. The browser can access authorized dataset data through the public Supabase
+   URL and publishable key.
+
+Supabase catalog discovery and OpenZen model selection are implemented. Dataset
+creation, authenticated ownership, managed uploads, and arbitrary Supabase SQL
+execution remain target behavior.
+
+### Supabase dataset workflow
+
+When implementing dataset creation or access:
+
+1. Inspect existing Supabase migrations, generated types, and dataset contracts
+   before choosing table, bucket, or RPC names. Do not invent a remote schema.
+2. Perform privileged dataset creation and administrative writes only in
+   server-only modules or route handlers using `SUPABASE_SECRET_KEY`.
+3. Use `NEXT_PUBLIC_SUPABASE_URL` and
+   `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in browser code only for operations
+   allowed by Supabase Row Level Security.
+4. Never expose, return, serialize, or prefix `SUPABASE_SECRET_KEY` with
+   `NEXT_PUBLIC_`.
+5. Treat the publishable key as an application identifier, not authorization.
+   Require authentication and RLS policies that scope dataset rows and storage
+   objects to the permitted user or organization.
+6. Keep a provider-neutral dataset contract so Dremio and Supabase can coexist
+   during migration. Distinguish dataset metadata, uploaded source objects,
+   semantic context, and queryable data.
+7. Validate uploads and metadata, bound file and row sizes, use generated
+   Supabase types, and test unauthorized cross-user access.
+
+If the task requires creating Supabase resources but no schema or migration
+exists, first define the dataset ownership and lifecycle contract. A secret key
+alone does not specify what a dataset is or make client access safe.
+
+### OpenZen default model workflow
+
+When implementing default chat models:
+
+1. Read `components/model-selector.tsx`, the chat route being changed, and the
+   OpenAI-compatible provider adapter or test route.
+2. Use `OPENZEN_API_KEY` only on the server. Add a same-origin route that lists
+   normalized model metadata and proxies chat requests; never send the key to
+   the browser or persist it in `localStorage`.
+3. Use OpenZen's documented model-list and chat endpoints. The key does not
+   reveal a base URL; if no endpoint is defined in code or documentation, ask
+   for it or add an explicit server-only configuration variable rather than
+   guessing.
+4. Populate the model selector from the server response, choose a documented
+   default deterministically, and preserve loading, empty, and error states.
+5. Keep manual OpenAI-compatible provider configuration as an explicit
+   fallback unless the product requirement removes it.
+6. Validate model IDs server-side against the allowed or discovered catalog;
+   do not let a client-selected model redirect requests to another provider.
+7. Apply timeouts, cancellation, bounded retries, safe errors, and secret-free
+   logs to model discovery and chat streaming.
+
+Tests must mock Supabase and OpenZen. Never use live keys or production data in
+unit, route integration, or end-to-end tests.
 
 ## Change workflows
 
@@ -165,10 +252,13 @@ Read:
 
 1. `components/chat-sidebar.tsx`
 2. `app/api/chat/route.ts`
-3. `components/sql-editor.tsx`
-4. `app/api/dremio/sql/route.ts`
-5. `lib/focus-types.ts`
-6. `components/focus/*`
+3. `app/api/chatbot/route.ts`
+4. `lib/ai/investment-insight-catalog.ts`
+5. `components/insights/investment-insight-renderer.tsx`
+6. `components/sql-editor.tsx`
+7. `app/api/dremio/sql/route.ts`
+8. `lib/focus-types.ts`
+9. `components/focus/*`
 
 Before any model-generated query runs automatically, require:
 
@@ -184,6 +274,10 @@ Before any model-generated query runs automatically, require:
 
 Render validated declarative chart specifications. Never execute
 model-generated React or JavaScript.
+
+Successful workbench SQL results are forwarded to `components/chat-sidebar.tsx`
+and rendered automatically through the validated json-render investment catalog.
+Do not reintroduce a separate report-generation action.
 
 ## Change-impact checklist
 

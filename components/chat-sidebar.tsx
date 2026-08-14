@@ -2,17 +2,27 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo, memo, PointerEvent as ReactPointerEvent } from "react"
 import { useChat } from "@ai-sdk/react"
-import { TextStreamChatTransport } from "ai"
+import { DefaultChatTransport, type UIMessage } from "ai"
 import ReactMarkdown from "react-markdown"
+import { ReasoningBlock } from "@/components/ai-elements/reasoning"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { getOpenAICredentials, OpenAICredentials, DremioCredentials } from "@/lib/credential-store"
 import { SelectedCatalogItem } from "@/components/dremio-catalog"
 import { WorkspaceDropdown } from "@/components/workspace-dropdown"
+import { ModelSelector } from "@/components/model-selector"
 import { getLinkedTablesWithNotes, db } from "@/lib/db"
 import { useActiveWorkspace } from "@/lib/use-workspace"
+import { useOpenZenModels } from "@/lib/use-openzen-models"
+import { sanitizeAiMarkdown } from "@/lib/ai/markdown"
+import { buildInvestmentInsightSpec } from "@/lib/ai/investment-insight-catalog"
 import { cn } from "@/lib/utils"
+import type { ExecutedQueryResult } from "@/components/sql-editor"
+import {
+  InvestmentInsightRenderer,
+  useInvestmentInsightMessage,
+} from "@/components/insights/investment-insight-renderer"
 import {
   MessageSquare,
   Send,
@@ -48,6 +58,20 @@ const VIEW_MODES = {
   normal: { width: 420, label: "Normal", icon: Columns2 },
   wide: { width: 560, label: "Wide", icon: RectangleHorizontal },
 } as const
+
+const SUPABASE_EXAMPLE_QUESTIONS = [
+  "Which fund had the highest active return?",
+  "Show portfolio exposure by asset class.",
+  "Which portfolios have the highest Sharpe ratio?",
+  "What are the latest instrument prices?",
+] as const
+
+const SQL_EXAMPLE_QUESTIONS = [
+  "What tables and columns are available?",
+  "Write a query to summarize the selected data.",
+  "How should these tables be joined?",
+  "Suggest useful analyses for these datasets.",
+] as const
 
 type ViewMode = keyof typeof VIEW_MODES
 
@@ -125,6 +149,8 @@ const CodeBlock = memo(function CodeBlock({
 
 // Memoized markdown renderer for performance
 const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
+  const safeContent = sanitizeAiMarkdown(content)
+
   return (
     <ReactMarkdown
       components={{
@@ -185,10 +211,32 @@ const MarkdownContent = memo(function MarkdownContent({ content }: { content: st
         em: ({ children }) => <em className="italic">{children}</em>,
       }}
     >
-      {content}
+      {safeContent}
     </ReactMarkdown>
   )
 })
+
+function SidebarAssistantContent({
+  parts,
+  isAssistantStreaming,
+}: {
+  parts: Array<{ type: string; text?: string; data?: unknown }>
+  isAssistantStreaming: boolean
+}) {
+  const { text, spec, hasSpec } = useInvestmentInsightMessage(parts)
+  const hasVisibleResponse = Boolean(text.trim()) || hasSpec
+
+  return (
+    <>
+      <ReasoningBlock
+        parts={parts}
+        isStreaming={isAssistantStreaming && !hasVisibleResponse}
+      />
+      {text ? <MarkdownContent content={text} /> : null}
+      {hasSpec && spec ? <InvestmentInsightRenderer spec={spec} /> : null}
+    </>
+  )
+}
 
 interface ChatSidebarProps {
   isOpen: boolean
@@ -204,7 +252,8 @@ interface ChatSidebarProps {
    * chat API as a `dialect` hint so the built-in system prompt uses the
    * right SQL flavour terminology (e.g. PostgreSQL vs Dremio).
    */
-  dialect?: "dremio" | "postgres"
+  dialect?: "dremio" | "postgres" | "supabase"
+  latestQueryResult?: ExecutedQueryResult | null
 }
 
 export function ChatSidebar({
@@ -215,9 +264,11 @@ export function ChatSidebar({
   selectedCatalogItems = [],
   onWorkspaceChange,
   dialect = "dremio",
+  latestQueryResult = null,
 }: ChatSidebarProps) {
   const [credentials, setCredentials] = useState<OpenAICredentials | null>(null)
   const [isCredentialsLoading, setIsCredentialsLoading] = useState(true)
+  const openZen = useOpenZenModels()
   const [input, setInput] = useState("")
   const [contextExpanded, setContextExpanded] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_WIDTH)
@@ -248,14 +299,6 @@ export function ChatSidebar({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const sidebarRef = useRef<HTMLDivElement>(null)
   
-  // Refs to hold latest values - these are read at send-time to ensure freshness
-  const credentialsRef = useRef<OpenAICredentials | null>(null)
-  const dataContextRef = useRef<DataContext | undefined>(undefined)
-  const dialectRef = useRef<"dremio" | "postgres">(dialect)
-  useEffect(() => {
-    dialectRef.current = dialect
-  }, [dialect])
-
   // Handle resize drag
   const handleResizeStart = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -415,66 +458,40 @@ export function ChatSidebar({
     buildDataContext()
   }, [selectedCatalogItems, activeWorkspaceId])
 
-  // Keep the ref in sync with the latest dataContext - this ensures send-time reads get fresh data
-  useEffect(() => {
-    dataContextRef.current = dataContext
-    console.log(`[ChatSidebar] 🔄 dataContextRef updated:`, {
-      hasContext: !!dataContext,
-      tables: dataContext?.tables?.length || 0,
-      containers: dataContext?.containers?.length || 0,
-    })
-  }, [dataContext])
-  
-  // Keep credentials ref in sync
-  useEffect(() => {
-    credentialsRef.current = credentials
-  }, [credentials])
-
   // Create a unique ID for the chat based on credentials
   const chatId = useMemo(() => {
+    if (openZen.available && openZen.selectedModel) {
+      return `chat-openzen-${openZen.selectedModel}`
+    }
     if (!credentials) return "chat-unconfigured"
-    return `chat-${credentials.baseUrl}-${credentials.model}`
-  }, [credentials])
+    return `chat-manual-${credentials.baseUrl}-${credentials.model}`
+  }, [credentials, openZen.available, openZen.selectedModel])
 
   // Create the transport - uses a body FUNCTION that reads from ref at send-time
   // This ensures the latest context is always included in requests
   const transport = useMemo(() => {
-    if (!credentials) {
-      console.log("[ChatSidebar] No credentials - transport not created")
+    if (!openZen.available && !credentials) {
+      console.log("[ChatSidebar] No model provider - transport not created")
       return undefined
     }
     
-    console.log(`[ChatSidebar] Creating transport with dynamic body function`)
+    console.log(`[ChatSidebar] Creating transport`)
     
-    return new TextStreamChatTransport({
+    return new DefaultChatTransport({
       api: "/api/chat",
-      // Body is a FUNCTION - it gets called at send-time, reading the latest values from refs
-      body: () => {
-        const currentContext = dataContextRef.current
-        const currentCreds = credentialsRef.current
-        
-        console.log(`[Transport body()] 📤 Evaluating body at send-time:`, {
-          hasCredentials: !!currentCreds,
-          hasDataContext: !!currentContext,
-          tablesCount: currentContext?.tables?.length || 0,
-          containersCount: currentContext?.containers?.length || 0,
-          totalColumns: (currentContext?.tables || []).reduce((sum, t) => sum + t.columns.length, 0) +
-            (currentContext?.containers || []).reduce((sum, c) => 
-              sum + c.childDatasets.reduce((s, d) => s + d.columns.length, 0), 0),
-        })
-        
-        return {
-          baseUrl: currentCreds?.baseUrl,
-          apiKey: currentCreds?.apiKey,
-          model: currentCreds?.model,
-          skipSslVerify: currentCreds?.sslVerify === false,
-          systemPrompt: currentCreds?.systemPrompt,
-          dialect: dialectRef.current,
-          dataContext: currentContext,
-        }
+      body: {
+        provider: openZen.available ? "openzen" : "manual",
+        baseUrl: credentials?.baseUrl,
+        apiKey: credentials?.apiKey,
+        model: openZen.available ? openZen.selectedModel : credentials?.model,
+        urlMode: credentials?.urlMode,
+        skipSslVerify: credentials?.sslVerify === false,
+        systemPrompt: credentials?.systemPrompt,
+        dialect,
+        dataContext,
       },
     })
-  }, [credentials]) // Only recreate when credentials change - body function reads refs at send-time
+  }, [credentials, dataContext, dialect, openZen.available, openZen.selectedModel])
 
   const {
     messages,
@@ -493,6 +510,41 @@ export function ChatSidebar({
   })
 
   const isChatLoading = status === "submitted" || status === "streaming"
+  const visualizedQueryIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (
+      !latestQueryResult
+      || latestQueryResult.id === visualizedQueryIdRef.current
+      || latestQueryResult.rows.length === 0
+    ) {
+      return
+    }
+
+    const spec = buildInvestmentInsightSpec([{
+      source: `${latestQueryResult.source}_query_result`,
+      rowCount: latestQueryResult.rowCount,
+      rows: latestQueryResult.rows,
+    }])
+    if (!spec) return
+
+    visualizedQueryIdRef.current = latestQueryResult.id
+    const message: UIMessage = {
+      id: `query-result-${latestQueryResult.id}`,
+      role: "assistant",
+      parts: [
+        {
+          type: "text",
+          text: `SQL completed with ${latestQueryResult.rowCount} row${latestQueryResult.rowCount === 1 ? "" : "s"}. The chart below is generated from the returned rows.`,
+        },
+        {
+          type: "data-spec",
+          data: { type: "flat", spec },
+        },
+      ],
+    }
+    setMessages((current) => [...current, message])
+  }, [latestQueryResult, setMessages])
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -509,14 +561,21 @@ export function ChatSidebar({
     }
   }, [])
 
+  const handleSuggestedQuestion = useCallback((question: string) => {
+    setInput(question)
+    requestAnimationFrame(() => textareaRef.current?.focus())
+  }, [])
+
   // Handle sending a message
   const handleSend = useCallback(() => {
-    if (!input.trim() || !credentials || isChatLoading) {
+    const hasProvider = openZen.available
+      ? Boolean(openZen.selectedModel)
+      : Boolean(credentials?.baseUrl && credentials.apiKey && credentials.model)
+    if (!input.trim() || !hasProvider || isChatLoading) {
       return
     }
     
-    // Log what will be sent - the transport will read from dataContextRef at send-time
-    const currentContext = dataContextRef.current
+    const currentContext = dataContext
     console.log(`[ChatSidebar] 📤 Triggering send:`, {
       messagePreview: input.trim().substring(0, 100) + (input.length > 100 ? '...' : ''),
       dataContextInRef: !!currentContext,
@@ -531,7 +590,7 @@ export function ChatSidebar({
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto"
     }
-  }, [input, credentials, isChatLoading, sendMessage])
+  }, [dataContext, input, credentials, isChatLoading, openZen.available, openZen.selectedModel, sendMessage])
 
   // Handle keyboard shortcuts
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -556,10 +615,14 @@ export function ChatSidebar({
     return message.content || ""
   }
 
-  const isConfigured = credentials !== null && 
-    credentials.baseUrl?.trim() !== "" && 
-    credentials.apiKey?.trim() !== "" &&
-    credentials.model?.trim() !== ""
+  const isConfigured = openZen.available
+    ? openZen.selectedModel.trim() !== ""
+    : credentials !== null
+      && credentials.baseUrl?.trim() !== ""
+      && credentials.apiKey?.trim() !== ""
+      && credentials.model?.trim() !== ""
+  const activeModel = openZen.available ? openZen.selectedModel : credentials?.model
+  const isProviderLoading = isCredentialsLoading || openZen.isLoading
 
   // Count total context items
   const totalTables = selectedCatalogItems.filter(i => i.type === "DATASET").length
@@ -675,10 +738,28 @@ export function ChatSidebar({
         {isConfigured && (
           <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
             <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
-            <span className="truncate max-w-[60px]">{credentials.model}</span>
+            <span className="truncate max-w-[80px]">{activeModel}</span>
           </div>
         )}
       </div>
+
+      {openZen.available && (
+        <div className="border-b border-border/50 px-3 py-2 shrink-0 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-muted-foreground">OpenCode Zen model</span>
+            <span className="text-[9px] text-success">Server managed</span>
+          </div>
+          <ModelSelector
+            value={openZen.selectedModel}
+            onChange={openZen.setSelectedModel}
+            suggestions={openZen.models.map((model) => model.id)}
+            allowCustom={false}
+            showRefresh={false}
+            disabled={openZen.isLoading}
+            placeholder="Select a Zen model"
+          />
+        </div>
+      )}
 
       {/* Workspace Selector */}
       <div className="border-b border-border/50 px-3 py-2 shrink-0">
@@ -734,7 +815,9 @@ export function ChatSidebar({
                   </p>
                   <p className="text-[9px] text-muted-foreground/70">
                     Use the checkboxes in the sidebar catalog to select tables or folders. 
-                    Their schema information will be shared with the AI assistant.
+                    {dialect === "supabase"
+                      ? " The assistant will query those Supabase datasets before answering."
+                      : " Their schema information will be shared with the AI assistant."}
                   </p>
                 </div>
               ) : (
@@ -814,7 +897,7 @@ export function ChatSidebar({
       )}
 
       {/* Content Area */}
-      {isCredentialsLoading ? (
+      {isProviderLoading ? (
         <div className="flex-1 flex items-center justify-center">
           <Loader2 className="h-6 w-6 text-primary animate-spin" />
         </div>
@@ -865,9 +948,29 @@ export function ChatSidebar({
                       </p>
                     )}
                   </div>
+                  <div className="mt-4 text-left">
+                    <p className="mb-2 text-[11px] font-medium text-foreground/80">
+                      Example questions
+                    </p>
+                    <div className="grid gap-1.5">
+                      {(dialect === "supabase"
+                        ? SUPABASE_EXAMPLE_QUESTIONS
+                        : SQL_EXAMPLE_QUESTIONS
+                      ).map((question) => (
+                        <button
+                          key={question}
+                          type="button"
+                          onClick={() => handleSuggestedQuestion(question)}
+                          className="rounded-md border border-border/60 bg-background/60 px-2.5 py-2 text-left text-xs leading-4 text-muted-foreground transition-[color,background-color,border-color] hover:border-primary/30 hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                        >
+                          {question}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               ) : (
-                messages.map((message) => (
+                messages.map((message, messageIndex) => (
                   <div
                     key={message.id}
                     className={cn(
@@ -903,7 +1006,17 @@ export function ChatSidebar({
                         </div>
                       ) : (
                         <div className="prose-sm max-w-none break-words overflow-hidden">
-                          <MarkdownContent content={getMessageContent(message)} />
+                          <SidebarAssistantContent
+                            parts={message.parts as Array<{
+                              type: string
+                              text?: string
+                              data?: unknown
+                            }>}
+                            isAssistantStreaming={
+                              status === "streaming"
+                              && messageIndex === messages.length - 1
+                            }
+                          />
                         </div>
                       )}
                     </div>
@@ -967,9 +1080,13 @@ export function ChatSidebar({
                 value={input}
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
-                placeholder={selectedCatalogItems.length > 0 
-                  ? "Ask about your selected tables..." 
-                  : "Ask about your data..."}
+                placeholder={
+                  selectedCatalogItems.length > 0
+                    ? dialect === "supabase"
+                      ? "Ask a question about the selected data…"
+                      : "Ask about your selected tables…"
+                    : "Select data, then ask a question…"
+                }
                 className="min-h-[40px] max-h-[200px] resize-none text-sm"
                 disabled={isChatLoading}
               />

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -35,7 +35,6 @@ import {
   Check,
   Pencil,
   Database,
-  ChevronRight,
   FileText,
   Tag,
   Columns3,
@@ -69,7 +68,7 @@ export default function WorkspacesPage() {
   const [isCreating, setIsCreating] = useState(false)
   
   // Linked tables
-  const { linkedTables, linkedTablePaths, link: linkTable, unlink } = useLinkedTables(selectedWorkspaceId)
+  const { linkedTables } = useLinkedTables(selectedWorkspaceId)
   const [linkedTablesWithNotes, setLinkedTablesWithNotes] = useState<LinkedTableWithNotes[]>([])
   const [isLoadingLinkedTables, setIsLoadingLinkedTables] = useState(false)
   
@@ -487,7 +486,7 @@ export default function WorkspacesPage() {
                       ) : (
                         <>
                           <Search className="h-8 w-8 mx-auto mb-2 opacity-30" />
-                          <p>No tables match "{searchQuery}"</p>
+                          <p>No tables match &ldquo;{searchQuery}&rdquo;</p>
                         </>
                       )}
                     </div>

@@ -1,16 +1,25 @@
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
-import { streamText, convertToModelMessages, type UIMessage, type ModelMessage } from "ai"
-import { Agent, fetch as undiciFetch } from "undici"
+import {
+  createUIMessageStreamResponse,
+  streamText,
+  generateText,
+  convertToModelMessages,
+  type UIMessage,
+  type UIMessageChunk,
+} from "ai"
+import { SPEC_DATA_PART_TYPE } from "@json-render/core"
+import { buildInvestmentInsightSpec } from "@/lib/ai/investment-insight-catalog"
+import { ModelSelectionSchema, resolveLanguageModel } from "@/lib/ai/model-provider"
+import {
+  buildAnswerEvidence,
+  buildCatalog,
+  buildPlannerInstructions,
+  executeDataPlan,
+  parseDataPlan,
+  type DataContext as SupabaseDataContext,
+} from "@/lib/supabase/data-qa"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
-
-// Create a reusable agent for SSL bypass
-const insecureAgent = new Agent({
-  connect: {
-    rejectUnauthorized: false,
-  },
-})
 
 interface ColumnInfo {
   name: string
@@ -91,7 +100,12 @@ function buildSystemPrompt(
   customSystemPrompt?: string,
   dialect?: "dremio" | "postgres" | string,
 ): string {
-  const dialectLabel = dialect === "postgres" ? "PostgreSQL" : dialect === "dremio" ? "Dremio" : "SQL"
+  const dialectLabel =
+    dialect === "postgres" || dialect === "supabase"
+      ? "PostgreSQL"
+      : dialect === "dremio"
+        ? "Dremio"
+        : "SQL"
   const basePrompt = (customSystemPrompt && customSystemPrompt.trim())
     ? customSystemPrompt.trim()
     : `You are an expert SQL assistant specialized in helping users discover data and build queries for ${dialectLabel}. You have deep knowledge of SQL syntax, query optimization, and data analysis best practices.
@@ -213,11 +227,30 @@ The user has selected the following items for context. Use this information to w
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const { messages, baseUrl, apiKey, model, skipSslVerify, dataContext, systemPrompt: userSystemPrompt, dialect } = body
+    const {
+      messages,
+      provider,
+      baseUrl,
+      apiKey,
+      model,
+      skipSslVerify,
+      urlMode,
+      dataContext,
+      systemPrompt: userSystemPrompt,
+      dialect,
+    } = body
 
-    if (!baseUrl || !apiKey || !model) {
+    const modelSelection = ModelSelectionSchema.safeParse({
+      provider,
+      baseUrl,
+      apiKey,
+      model,
+      skipSslVerify,
+      urlMode,
+    })
+    if (!modelSelection.success) {
       return new Response(
-        JSON.stringify({ error: "Missing required credentials (baseUrl, apiKey, model)" }),
+        JSON.stringify({ error: "Invalid model provider configuration" }),
         { status: 400, headers: { "Content-Type": "application/json" } }
       )
     }
@@ -233,7 +266,7 @@ export async function POST(req: Request) {
     const modelMessages = await convertToModelMessages(messages as UIMessage[])
     
     // Build the system prompt with data context + optional user-provided instructions
-    const systemPrompt = buildSystemPrompt(
+    let systemPrompt = buildSystemPrompt(
       dataContext as DataContext | undefined,
       typeof userSystemPrompt === "string" ? userSystemPrompt : undefined,
       typeof dialect === "string" ? dialect : undefined,
@@ -286,67 +319,74 @@ export async function POST(req: Request) {
     console.log(`[Chat API] System prompt size: ${systemPrompt.length} chars`)
     console.log(`[Chat API] ═══════════════════════════════════════════════════════`)
     
-    // Prepend system message
-    const messagesWithSystem: ModelMessage[] = [
-      { role: "system", content: systemPrompt },
-      ...modelMessages
-    ]
+    const languageModel = await resolveLanguageModel(modelSelection.data)
+    let insightSpec: ReturnType<typeof buildInvestmentInsightSpec> = null
 
-    // Normalize base URL - ensure it ends with /v1
-    let normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "")
-    if (!normalizedBaseUrl.endsWith("/v1")) {
-      normalizedBaseUrl = `${normalizedBaseUrl}/v1`
+    if (dialect === "supabase") {
+      const catalog = buildCatalog(dataContext as SupabaseDataContext | undefined)
+      if (catalog.length === 0) {
+        systemPrompt += `
+
+The user is using the Supabase data-answering mode, but no queryable tables and
+columns are selected. Do not invent a data answer. Ask the user to select a
+table or the public schema in the catalog first.`
+      } else {
+        const planned = await generateText({
+          model: languageModel,
+          instructions: buildPlannerInstructions(catalog),
+          messages: modelMessages,
+          temperature: 0,
+          maxOutputTokens: 1_200,
+        })
+        const plan = parseDataPlan(planned.text, catalog)
+        const results = await executeDataPlan(plan)
+        insightSpec = buildInvestmentInsightSpec(results)
+        systemPrompt += `
+
+## Governed data-answering mode
+${buildAnswerEvidence(results)}
+Do not replace verified values with model knowledge or estimates.`
+      }
     }
-
-    // Create a custom fetch for SSL verification bypass if needed
-    const customFetch = skipSslVerify
-      ? async (input: RequestInfo | URL, init?: RequestInit) => {
-          const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url
-          
-          // Convert headers to a plain object if needed
-          let headers: Record<string, string> = {}
-          if (init?.headers) {
-            if (init.headers instanceof Headers) {
-              init.headers.forEach((value, key) => {
-                headers[key] = value
-              })
-            } else if (Array.isArray(init.headers)) {
-              for (const [key, value] of init.headers) {
-                headers[key] = value
-              }
-            } else {
-              headers = init.headers as Record<string, string>
-            }
-          }
-
-          const response = await undiciFetch(url, {
-            method: init?.method || "GET",
-            headers,
-            body: init?.body as string | undefined,
-            dispatcher: insecureAgent,
-          })
-          
-          return response as unknown as Response
-        }
-      : undefined
-
-    // Create the OpenAI compatible provider
-    const provider = createOpenAICompatible({
-      name: "custom-openai",
-      apiKey,
-      baseURL: normalizedBaseUrl,
-      fetch: customFetch,
-    })
 
     // Stream the response using the messages with system prompt
     const result = streamText({
-      model: provider(model),
-      messages: messagesWithSystem,
+      model: languageModel,
+      instructions: systemPrompt,
+      messages: modelMessages,
       temperature: 0.7,
+      reasoning: "low",
     })
 
-    // Return the streaming response
-    return result.toTextStreamResponse()
+    const onStreamError = (streamError: unknown) =>
+      streamError instanceof Error
+        ? streamError.message
+        : "The model response stream failed"
+
+    if (insightSpec) {
+      const stream = result.toUIMessageStream({
+        originalMessages: messages as UIMessage[],
+        sendReasoning: true,
+        onError: onStreamError,
+      }).pipeThrough(new TransformStream<UIMessageChunk, UIMessageChunk>({
+        transform(chunk, controller) {
+          controller.enqueue(chunk)
+        },
+        flush(controller) {
+          controller.enqueue({
+            type: SPEC_DATA_PART_TYPE,
+            data: { type: "flat", spec: insightSpec },
+          } as UIMessageChunk)
+        },
+      }))
+      return createUIMessageStreamResponse({ stream })
+    }
+
+    return result.toUIMessageStreamResponse({
+      originalMessages: messages as UIMessage[],
+      sendReasoning: true,
+      onError: onStreamError,
+    })
   } catch (error) {
     console.error("[Chat API] Error:", error instanceof Error ? error.message : String(error))
     return new Response(

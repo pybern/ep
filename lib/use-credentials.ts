@@ -16,6 +16,8 @@ export function useDremioCredentials() {
   const [credentials, setCredentials] = useState<DremioCredentials | null>(null)
   const [isLoading, setIsLoading] = useState(true)
 
+  // Credentials live in browser storage, so mount effects hydrate its snapshot.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setCredentials(getDremioCredentials())
     setIsLoading(false)
@@ -52,6 +54,7 @@ export function useOpenAICredentials() {
     setCredentials(getOpenAICredentials())
     setIsLoading(false)
   }, [])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const save = useCallback((creds: OpenAICredentials) => {
     saveOpenAICredentials(creds)

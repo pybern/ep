@@ -56,11 +56,11 @@ const PROVIDER_PRESETS: Record<Provider, { label: string; defaultPort: number; h
 }
 
 export function PostgresCredentialSettings({ onCredentialsChange }: PostgresCredentialSettingsProps) {
-  const [provider, setProvider] = useState<Provider>("planetscale")
+  const [provider, setProvider] = useState<Provider>("supabase")
   const [mode, setMode] = useState<"connectionString" | "fields">("connectionString")
   const [connectionString, setConnectionString] = useState("")
   const [host, setHost] = useState("")
-  const [port, setPort] = useState<number>(5432)
+  const [port, setPort] = useState<number>(6543)
   const [database, setDatabase] = useState("")
   const [user, setUser] = useState("")
   const [password, setPassword] = useState("")
@@ -88,7 +88,7 @@ export function PostgresCredentialSettings({ onCredentialsChange }: PostgresCred
       setUser(saved.user ?? "")
       setPassword(saved.password ?? "")
       setSslMode(saved.sslMode ?? "require")
-      setProvider(saved.provider ?? "planetscale")
+      setProvider(saved.provider ?? "supabase")
       setDims(saved.embeddingDimensions ?? 1536)
       setStored(true)
     }
@@ -127,9 +127,10 @@ export function PostgresCredentialSettings({ onCredentialsChange }: PostgresCred
 
   const handleClear = () => {
     clearPostgresCredentials()
+    setProvider("supabase")
     setConnectionString("")
     setHost("")
-    setPort(5432)
+    setPort(6543)
     setDatabase("")
     setUser("")
     setPassword("")
@@ -232,7 +233,14 @@ export function PostgresCredentialSettings({ onCredentialsChange }: PostgresCred
         {/* Provider preset */}
         <div className="space-y-2">
           <Label className="text-sm">Provider</Label>
-          <Select value={provider} onValueChange={(v) => setProvider(v as Provider)}>
+          <Select
+            value={provider}
+            onValueChange={(value) => {
+              const nextProvider = value as Provider
+              setProvider(nextProvider)
+              setPort(PROVIDER_PRESETS[nextProvider].defaultPort)
+            }}
+          >
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>

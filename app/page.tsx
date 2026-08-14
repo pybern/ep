@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, PointerEvent as ReactPointerEvent } from "react"
 import { FloatingWidget } from "@/components/floating-widget"
-import { SqlEditor } from "@/components/sql-editor"
+import { SqlEditor, type ExecutedQueryResult } from "@/components/sql-editor"
 import { DremioCatalog, SelectedCatalogItem } from "@/components/dremio-catalog"
 import { PostgresCatalog } from "@/components/postgres-catalog"
 import { ChatSidebar } from "@/components/chat-sidebar"
@@ -27,8 +27,9 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
+import { useIntegrationDefaults } from "@/lib/use-integration-defaults"
 
-type DataSourceKind = "dremio" | "postgres"
+type DataSourceKind = "dremio" | "postgres" | "supabase"
 const DATA_SOURCE_STORAGE_KEY = "ep_data_source"
 
 // Catalog sidebar view mode presets
@@ -46,6 +47,7 @@ const CATALOG_DEFAULT_WIDTH = 280
 
 export default function Page() {
   const router = useRouter()
+  const { defaults, isLoading: defaultsLoading } = useIntegrationDefaults()
   const [credentials, setCredentials] = useState<DremioCredentials | null>(null)
   const [pgCredentials, setPgCredentials] = useState<PostgresCredentials | null>(null)
   const [dataSource, setDataSource] = useState<DataSourceKind>("dremio")
@@ -56,16 +58,17 @@ export default function Page() {
   const [catalogWidth, setCatalogWidth] = useState(CATALOG_DEFAULT_WIDTH)
   const [isCatalogResizing, setIsCatalogResizing] = useState(false)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null)
+  const [latestQueryResult, setLatestQueryResult] = useState<ExecutedQueryResult | null>(null)
 
-  // Load credentials on mount + subscribe to updates from /settings
+  // Browser storage is an external store. This mount effect intentionally
+  // hydrates its snapshot before subscribing to future updates.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const refresh = () => {
       setCredentials(getDremioCredentials())
       setPgCredentials(getPostgresCredentials())
     }
     refresh()
-    const saved = typeof window !== "undefined" ? localStorage.getItem(DATA_SOURCE_STORAGE_KEY) : null
-    if (saved === "postgres" || saved === "dremio") setDataSource(saved)
     setIsLoading(false)
     const onPg = () => refresh()
     const onStorage = (e: StorageEvent) => {
@@ -81,18 +84,29 @@ export default function Page() {
 
   // Persist the active data source so reloads keep the user's choice.
   useEffect(() => {
-    if (typeof window === "undefined") return
+    if (typeof window === "undefined" || isLoading || defaultsLoading) return
     localStorage.setItem(DATA_SOURCE_STORAGE_KEY, dataSource)
-  }, [dataSource])
+  }, [dataSource, defaultsLoading, isLoading])
 
-  // If the user has Postgres configured but no Dremio, flip to Postgres on
-  // first load. This makes Postgres-only users land in a working state.
+  // Prefer environment-backed Supabase, then retain configured manual sources.
   useEffect(() => {
-    if (isLoading) return
+    if (isLoading || defaultsLoading) return
     const saved = typeof window !== "undefined" ? localStorage.getItem(DATA_SOURCE_STORAGE_KEY) : null
-    if (saved) return
-    if (!credentials && pgCredentials) setDataSource("postgres")
-  }, [isLoading, credentials, pgCredentials])
+    if (saved === "supabase" && defaults.supabase) {
+      setDataSource("supabase")
+    } else if (saved === "postgres" && pgCredentials) {
+      setDataSource("postgres")
+    } else if (saved === "dremio" && credentials) {
+      setDataSource("dremio")
+    } else if (defaults.supabase) {
+      setDataSource("supabase")
+    } else if (pgCredentials) {
+      setDataSource("postgres")
+    } else {
+      setDataSource("dremio")
+    }
+  }, [defaults.supabase, defaultsLoading, isLoading, credentials, pgCredentials])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Switching the data source resets the selection because paths don't share
   // a namespace between Dremio and Postgres.
@@ -152,6 +166,11 @@ export default function Page() {
     setChatSidebarOpen(prev => !prev)
   }, [])
 
+  const handleQueryResult = useCallback((result: ExecutedQueryResult) => {
+    setLatestQueryResult(result)
+    setChatSidebarOpen(true)
+  }, [])
+
   const handleTableSelect = useCallback((tablePath: string) => {
     // Insert table path at cursor position in SQL editor
     const windowWithInsert = window as unknown as { insertTableAtCursor?: (path: string) => void }
@@ -170,7 +189,7 @@ export default function Page() {
     setSelectedCatalogItems(items)
   }, [])
 
-  if (isLoading) {
+  if (isLoading || defaultsLoading) {
     return (
       <main className="fixed inset-0 bg-background flex items-center justify-center">
         <Database className="h-8 w-8 text-primary animate-pulse" />
@@ -214,9 +233,10 @@ export default function Page() {
                   })}
                 </div>
               )
-              return dataSource === "postgres" ? (
+              return dataSource === "postgres" || dataSource === "supabase" ? (
                 <PostgresCatalog
                   credentials={pgCredentials}
+                  source={dataSource}
                   onTableSelect={handleTableSelect}
                   onOpenSettings={() => handleOpenSettings("postgres")}
                   selectionEnabled={true}
@@ -296,7 +316,7 @@ export default function Page() {
                 className="h-7 text-xs gap-1.5 ml-2"
                 title="Switch data source"
               >
-                {dataSource === "postgres" ? (
+                {dataSource === "postgres" || dataSource === "supabase" ? (
                   <Leaf className="h-3 w-3 text-emerald-500" />
                 ) : (
                   <Database className="h-3 w-3 text-primary" />
@@ -321,6 +341,15 @@ export default function Page() {
                     </div>
                   </div>
                 </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="supabase" disabled={!defaults.supabase}>
+                  <Leaf className="h-3.5 w-3.5 mr-2 text-emerald-500" />
+                  <div className="flex-1">
+                    <div className="text-xs font-medium">Supabase</div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {defaults.supabase ? "Environment default" : "Not configured"}
+                    </div>
+                  </div>
+                </DropdownMenuRadioItem>
                 <DropdownMenuRadioItem value="postgres" disabled={!pgCredentials}>
                   <Leaf className="h-3.5 w-3.5 mr-2 text-emerald-500" />
                   <div className="flex-1">
@@ -336,7 +365,7 @@ export default function Page() {
                 </DropdownMenuRadioItem>
               </DropdownMenuRadioGroup>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => handleOpenSettings(dataSource === "postgres" ? "postgres" : "dremio")}>
+              <DropdownMenuItem onClick={() => handleOpenSettings(dataSource === "dremio" ? "dremio" : "postgres")}>
                 <Settings className="h-3.5 w-3.5 mr-2" />
                 <span className="text-xs">Configure sources...</span>
               </DropdownMenuItem>
@@ -398,6 +427,11 @@ export default function Page() {
                 Configure Dremio
               </Button>
             )
+          ) : dataSource === "supabase" ? (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
+              Supabase environment default
+            </div>
           ) : pgCredentials ? (
             <button
               onClick={() => handleOpenSettings("postgres")}
@@ -452,15 +486,23 @@ export default function Page() {
             driver={
               dataSource === "postgres"
                 ? { kind: "postgres", credentials: pgCredentials }
+                : dataSource === "supabase"
+                  ? { kind: "postgres", credentials: null }
                 : { kind: "dremio", credentials }
             }
+            executionUnavailableReason={
+              dataSource === "supabase"
+                ? "Supabase catalog is read-only; add Postgres credentials to execute SQL"
+                : undefined
+            }
             onInsertTable={handleTableSelect}
+            onQueryResult={handleQueryResult}
           />
         </div>
       </div>
 
       {/* First-run onboarding nudge - only when NOTHING is configured */}
-      {!credentials && !pgCredentials && (
+      {!defaults.supabase && !credentials && !pgCredentials && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 animate-in fade-in slide-in-from-bottom-4 duration-500">
           <Button
             onClick={() => handleOpenSettings("dremio")}
@@ -482,6 +524,7 @@ export default function Page() {
         selectedCatalogItems={selectedCatalogItems}
         onWorkspaceChange={setActiveWorkspaceId}
         dialect={dataSource}
+        latestQueryResult={latestQueryResult}
       />
 
       {/* Floating Widget - retained as an ad-hoc ⚡ tester for power users.

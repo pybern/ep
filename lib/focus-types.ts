@@ -1,12 +1,19 @@
 import { z } from "zod"
 
-export const FocusCredentialsSchema = z.object({
-  baseUrl: z.string().min(1),
-  apiKey: z.string().min(1),
-  model: z.string().min(1),
-  urlMode: z.enum(["base", "endpoint"]).optional(),
-  skipSslVerify: z.boolean().optional(),
-})
+export const FocusCredentialsSchema = z.union([
+  z.object({
+    provider: z.literal("openzen"),
+    model: z.string().min(1).max(200),
+  }),
+  z.object({
+    provider: z.literal("manual").optional(),
+    baseUrl: z.string().url().min(1).max(2_000),
+    apiKey: z.string().min(1).max(8_000),
+    model: z.string().min(1).max(200),
+    urlMode: z.enum(["base", "endpoint"]).optional(),
+    skipSslVerify: z.boolean().optional(),
+  }),
+])
 
 export const FocusColumnSchema = z.object({
   name: z.string().min(1),
@@ -57,21 +64,6 @@ export const FocusBuildRequestSchema = z.object({
   credentials: FocusCredentialsSchema,
 })
 
-export const FocusReportResultSchema = z.object({
-  title: z.string().min(1),
-  reportMarkdown: z.string().min(1),
-  rawResponse: z.string().optional(),
-})
-
-export const FocusReportRequestSchema = z.object({
-  language: z.string().min(1),
-  code: z.string().min(1),
-  runResult: FocusRunResultSchema,
-  buildResult: FocusBuildResultSchema.optional(),
-  credentials: FocusCredentialsSchema,
-})
-
 export type FocusCredentials = z.infer<typeof FocusCredentialsSchema>
 export type FocusRunResult = z.infer<typeof FocusRunResultSchema>
 export type FocusBuildResult = z.infer<typeof FocusBuildResultSchema>
-export type FocusReportResult = z.infer<typeof FocusReportResultSchema>

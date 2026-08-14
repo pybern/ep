@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { CheckCircle2, XCircle, Trash2, History, Globe, Database, Server, Sparkles, Leaf } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
-import { cn } from "@/lib/utils"
 
 type Props = {
   history: TestResult[]

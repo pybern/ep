@@ -14,19 +14,21 @@ This document distinguishes:
 
 ## Product terminology
 
-- **Data source**: the system that owns schemas and executes queries. Dremio is
-  the only real database integration today.
-- **LLM provider**: an OpenAI-compatible endpoint configured with a base URL,
-  API key, and model.
+- **Data source**: the system that owns schemas and executes queries. Supabase
+  is the environment-backed default for RLS-governed catalog browsing and
+  schema context; manual Dremio or Postgres credentials are required for
+  arbitrary SQL execution.
+- **LLM provider**: OpenCode Zen when `OPENZEN_API_KEY` is configured, with a
+  browser-configured OpenAI-compatible endpoint as the fallback.
 - **Data context**: selected tables, columns, folders, and workspace notes sent
   to the SQL assistant.
 - **Workspace**: a browser-local collection of linked tables and semantic notes.
 - **Text-to-SQL**: generation of SQL from a natural-language request plus data
   context.
-- **Insight**: an explanation, query, result summary, report, or visualization
+- **Insight**: an explanation, query, result summary, or visualization
   produced from governed data.
-- **Focus**: the separate prototype on `/chat` that creates mock tabular data,
-  chart specifications, and reports. It is not connected to Dremio.
+- **Focus**: the separate prototype on `/chat` that creates mock tabular data
+  and chart specifications. It is not connected to Dremio.
 
 ## System context
 
@@ -50,8 +52,11 @@ flowchart LR
 ```
 
 The Next.js application is both the web client and a thin server-side proxy.
-There is no Convex backend, application database, vector store, or durable
-agent runtime in the current repository.
+There is no Convex backend or durable agent runtime. A Supabase/Postgres schema
+contains public synthetic investment datasets. The Next.js product discovers
+that catalog through the Supabase PostgREST OpenAPI document using the public
+publishable key. Browser-local Dexie remains the application store for
+workspaces and conversations.
 
 ## Current architecture
 
@@ -63,17 +68,21 @@ agent runtime in the current repository.
 | Data exploration | Browse Dremio catalog and load dataset columns | `components/dremio-catalog.tsx`, `app/api/dremio/catalog/route.ts` |
 | Query execution | Edit SQL, submit a Dremio job, poll, return up to 500 rows | `components/sql-editor.tsx`, `app/api/dremio/sql/route.ts` |
 | Schema-aware chat | Build `dataContext`, stream assistant responses | `components/chat-sidebar.tsx`, `app/api/chat/route.ts` |
+| Supabase data Q&A | Validate model-created read plans, fetch bounded RLS-governed rows, answer with source names, and stream catalog-constrained json-render charts | `lib/supabase/data-qa.ts`, `lib/ai/investment-insight-catalog.ts`, `app/api/chat/route.ts`, `app/api/chatbot/route.ts` |
+| Model discovery | List normalized OpenCode Zen models without exposing the server key; select a model in both chat surfaces | `app/api/models/route.ts`, `lib/ai/openzen.ts`, `components/model-selector.tsx` |
 | Semantic notes | Workspaces, linked tables, table notes, column notes | `app/workspaces/page.tsx`, `lib/db.ts`, `lib/use-workspace.ts` |
 | Credentials | Configure Dremio, OpenAI-compatible, and ADFS values | `components/credential-settings.tsx`, `lib/credential-store.ts` |
-| General chat and Focus | Generic chat plus mock data/chart/report workflow | `app/chat/page.tsx`, `app/api/chatbot/route.ts`, `app/api/focus/*` |
+| General chat and Focus | Generic chat plus mock data/chart workflow | `app/chat/page.tsx`, `app/api/chatbot/route.ts`, `app/api/focus/*` |
 | SSO experiment | OIDC discovery and authorization-code exchange | `app/sso/page.tsx`, `app/api/adfs/*` |
+| Synthetic investment data | Default read-only Supabase catalog, schema context, seed, provenance registry, RLS, and analytical views | `app/api/supabase/catalog/route.ts`, `supabase/migrations/*`, `supabase/seed.sql` |
 
 ### Browser state
 
-`lib/credential-store.ts` stores provider configuration under
-`ep_credentials` in `localStorage`. The values are sent in request bodies to
-the relevant route handlers. ADFS access tokens are stored in
-`sessionStorage`.
+`lib/credential-store.ts` stores manual provider configuration under
+`ep_credentials` in `localStorage`. Those values are sent in request bodies
+only when the OpenCode Zen server default is unavailable. The selected Zen
+model id is stored separately in local storage; `OPENZEN_API_KEY` remains on
+the server. ADFS access tokens are stored in `sessionStorage`.
 
 `lib/db.ts` creates the Dexie database `ep-workspace-notes` with:
 
@@ -108,7 +117,7 @@ sequenceDiagram
         Notes-->>Sidebar: Workspace data context
     end
     User->>Sidebar: Ask a data question
-    Sidebar->>ChatApi: Messages, provider credentials, dataContext
+    Sidebar->>ChatApi: Messages, provider id/model, dataContext
     ChatApi->>ChatApi: Build schema-aware system prompt
     ChatApi->>Llm: Stream text-to-SQL request
     Llm-->>Sidebar: Explanation and SQL text
@@ -118,9 +127,10 @@ sequenceDiagram
     Dremio-->>Editor: Schema and up to 500 rows
 ```
 
-Important: chat generation and SQL execution are separate user actions. The
-LLM cannot execute, validate, repair, or summarize a Dremio query through
-tools.
+Important: Dremio chat generation and SQL execution remain separate user
+actions. In Supabase mode, the server can execute only a bounded structured
+PostgREST plan over selected public investment tables. The model does not
+receive arbitrary SQL execution access.
 
 ### Context construction
 
@@ -130,8 +140,12 @@ tools.
 2. Without a workspace, it uses checked catalog items and their loaded columns.
 
 The component sends this as `dataContext` to `/api/chat`.
-`app/api/chat/route.ts` serializes it into a system prompt and calls an
-OpenAI-compatible model through the Vercel AI SDK.
+`app/api/chat/route.ts` serializes it into model instructions and calls the
+selected model through the Vercel AI SDK. When OpenCode Zen is configured,
+`/api/models` discovers its catalog with the server-only key and the chat route
+validates the selected model against that catalog. The provider adapter chooses
+Responses, Anthropic Messages, Google Generative AI, or Chat Completions based
+on the documented Zen protocol for that model family.
 
 This is prompt injection of selected metadata, not retrieval-augmented
 generation:
@@ -141,6 +155,13 @@ generation:
 - no vector index
 - no relevance retrieval
 - no context ranking or token-budget policy
+
+For Supabase data questions, selected table metadata also forms a strict
+allowlist. A first model call proposes up to 3 single-table read plans. The
+server validates every table, column, filter, sort, and limit, executes the
+plans with the publishable key under RLS, bounds returned data, and supplies
+those rows to the final answer call. Answers identify their source tables and
+state that the data is synthetic.
 
 ### Dremio integration
 
@@ -163,7 +184,31 @@ The product currently has two independent chat experiences:
 - `/chat` uses `/api/chatbot` for general chat and `/api/focus/*` for the Focus
   workflow.
 
-Focus asks an LLM to produce data, chart specifications, and reports. Its run
+Both surfaces use OpenCode Zen by default when `OPENZEN_API_KEY` is present and
+show a server-discovered model selector. If the environment key is absent or
+discovery fails, the existing browser-configured OpenAI-compatible provider is
+used instead.
+
+Both chat routes forward reasoning parts when the selected model provides them.
+The two chat surfaces consolidate those parts into one collapsible Thinking
+block that stays open until the first answer text or renderable json-render
+spec is visible. Chat generation requests low reasoning effort where the
+provider supports it. Long reasoning remains height-limited inside the block
+unless the user explicitly expands it.
+
+When a governed Supabase plan returns rows, both chat routes deterministically
+map those verified rows into a validated json-render specification and append
+it to the answer stream. The investment insight catalog limits output to cards,
+metrics, bar/line charts, and tables, which render through application-owned
+React components. Empty results remain text-only. The model produces the
+written answer, not the visualization tree, and no generated React or
+JavaScript is executed.
+
+Successful SQL execution in the workbench also forwards its bounded rows to the
+chat sidebar, which immediately appends a validated json-render visualization.
+There is no separate report action or report-generation endpoint.
+
+Focus asks an LLM to produce data and chart specifications. Its run
 stage uses generated or fallback mock rows and does not execute code or SQL
 against Dremio. Do not treat Focus output as a live-data insight.
 
@@ -173,6 +218,15 @@ The application can run as a Next.js Node.js service using the included
 `Dockerfile` and Kubernetes manifests. GitLab/sample deployment assets are
 infrastructure helpers; they do not change the runtime data flow described
 above.
+
+The configured Supabase development project also contains deterministic
+synthetic market, macro/rates, asset-management, and responsible-investing
+subject areas. Anonymous and authenticated PostgREST clients can read only
+datasets marked public and synthetic through row-level security. No client
+write policies exist. The workbench uses this path for zero-configuration
+catalog discovery and schema-aware chat context. PostgREST does not expose
+arbitrary SQL, so query execution still requires a manually configured
+Postgres or Dremio connection.
 
 ## Current trust boundaries and risks
 

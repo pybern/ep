@@ -8,6 +8,12 @@ A comprehensive tool for testing API endpoints and OpenAI-compatible APIs with s
 
 All credentials are configured through a dedicated **`/settings`** page — the canonical entry point for the user journey.
 
+When `OPENZEN_API_KEY` is present on the server, both chat experiences use
+OpenCode Zen by default. The app discovers supported models through
+`/api/models`, keeps the key server-side, and shows a model selector in the SQL
+assistant and `/chat`. Manual OpenAI-compatible credentials remain the fallback
+when Zen is unavailable.
+
 - **Guided setup** — three stacked step cards (Dremio → AI provider → Postgres + Embeddings). Each card shows status, hosts the form + inline **Test** + **Save**, and reveals a **Next** button once green.
 - **Model selector** — the AI provider step ships a combobox that auto-fetches the provider's `/v1/models` catalogue (via `/api/openai/test`), shows suggested defaults, and still accepts free-form model ids for gateways that don't expose a catalogue. The list is cached per (baseUrl + urlMode + key-prefix) so switching providers invalidates it automatically.
 - **System instructions** — an optional textarea lets users override the built-in SQL-assistant system prompt. Presets are provided (Concise data analyst, Teaching mode, Read-only safety); leaving it empty falls back to the default. The prompt is persisted in `localStorage` alongside the rest of the AI credentials and forwarded to every chat request (`/api/chat`, `/api/chatbot`). Data-context schema is still appended automatically.

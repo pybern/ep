@@ -23,15 +23,26 @@ interface SqlEditorProps {
    */
   credentials?: DremioCredentials | null
   onInsertTable?: (tablePath: string) => void
+  onQueryResult?: (result: ExecutedQueryResult) => void
+  executionUnavailableReason?: string
 }
 
-interface QueryResult {
+export interface QueryResult {
   jobId: string
   rowCount: number
   schema?: { name: string; type: { name: string } }[]
   rows?: Record<string, unknown>[]
   error?: string
   details?: string
+}
+
+export interface ExecutedQueryResult {
+  id: string
+  source: SqlDriver["kind"]
+  sql: string
+  rowCount: number
+  rows: Record<string, unknown>[]
+  schema: NonNullable<QueryResult["schema"]>
 }
 
 /**
@@ -116,7 +127,13 @@ function highlightSQL(sql: string): string {
   return highlighted
 }
 
-export function SqlEditor({ driver, credentials, onInsertTable }: SqlEditorProps) {
+export function SqlEditor({
+  driver,
+  credentials,
+  onInsertTable,
+  onQueryResult,
+  executionUnavailableReason,
+}: SqlEditorProps) {
   // Normalise the driver: accept both the new discriminated-union prop and
   // the legacy `credentials` prop (treated as Dremio).
   const activeDriver: SqlDriver = driver ?? { kind: "dremio", credentials: credentials ?? null }
@@ -168,7 +185,21 @@ export function SqlEditor({ driver, credentials, onInsertTable }: SqlEditorProps
         if (!response.ok) {
           setResult({ jobId: "", rowCount: 0, error: data.error, details: data.details })
         } else {
-          setResult(data)
+          const nextResult = data as QueryResult
+          setResult(nextResult)
+          if (nextResult.rows?.length) {
+            onQueryResult?.({
+              id: crypto.randomUUID(),
+              source: "dremio",
+              sql: sql.trim(),
+              rowCount: nextResult.rowCount,
+              rows: nextResult.rows,
+              schema: nextResult.schema ?? Object.keys(nextResult.rows[0] ?? {}).map((name) => ({
+                name,
+                type: { name: "unknown" },
+              })),
+            })
+          }
         }
       } else {
         // Postgres driver: translate /api/postgres/sql response (rowMode: "array")
@@ -208,7 +239,7 @@ export function SqlEditor({ driver, credentials, onInsertTable }: SqlEditorProps
             })
             return obj
           })
-          setResult({
+          const nextResult: QueryResult = {
             jobId: "",
             rowCount: data.rowCount ?? rows.length,
             schema,
@@ -216,7 +247,18 @@ export function SqlEditor({ driver, credentials, onInsertTable }: SqlEditorProps
             details: data.truncated
               ? `Row set truncated to ${data.returned} rows (of ${data.rowCount}).`
               : undefined,
-          })
+          }
+          setResult(nextResult)
+          if (rows.length) {
+            onQueryResult?.({
+              id: crypto.randomUUID(),
+              source: "postgres",
+              sql: sql.trim(),
+              rowCount: nextResult.rowCount,
+              rows,
+              schema,
+            })
+          }
         }
       }
     } catch (error) {
@@ -300,7 +342,7 @@ export function SqlEditor({ driver, credentials, onInsertTable }: SqlEditorProps
     }
   }
 
-  const insertTableAtCursor = (tablePath: string) => {
+  const insertTableAtCursor = useCallback((tablePath: string) => {
     const textarea = textareaRef.current
     if (textarea) {
       const start = textarea.selectionStart
@@ -313,7 +355,7 @@ export function SqlEditor({ driver, credentials, onInsertTable }: SqlEditorProps
         textarea.selectionStart = textarea.selectionEnd = start + formattedPath.length
       }, 0)
     }
-  }
+  }, [sql])
 
   // Expose insert function
   useEffect(() => {
@@ -325,7 +367,7 @@ export function SqlEditor({ driver, credentials, onInsertTable }: SqlEditorProps
         delete (window as unknown as { insertTableAtCursor?: (path: string) => void }).insertTableAtCursor
       }
     }
-  }, [sql])
+  }, [insertTableAtCursor])
 
   return (
     <div className="flex flex-col h-full">
@@ -340,7 +382,7 @@ export function SqlEditor({ driver, credentials, onInsertTable }: SqlEditorProps
             <span className="text-xs text-muted-foreground">
               {hasCredentials
                 ? `⌘/Ctrl + Enter to run · ${activeDriver.kind === "postgres" ? "Postgres" : "Dremio"}`
-                : "Configure credentials to run"}
+                : executionUnavailableReason ?? "Configure credentials to run"}
             </span>
             <Button
               size="sm"
