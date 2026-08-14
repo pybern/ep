@@ -1,5 +1,3 @@
-import { Agent, fetch as undiciFetch } from "undici"
-
 import {
   FocusBuildRequestSchema,
   FocusBuildResultSchema,
@@ -7,69 +5,17 @@ import {
   type FocusCredentials,
   type FocusRunResult,
 } from "@/lib/focus-types"
-
-type ChatCompletionResponse = {
-  choices?: Array<{ message?: { content?: string } }>
-  error?: { message?: string }
-  message?: string
-}
-
-function resolveChatCompletionsUrl(baseUrl: string, urlMode?: "base" | "endpoint") {
-  const normalized = baseUrl.trim().replace(/\/+$/, "")
-  if (urlMode === "endpoint") return normalized
-
-  let base = normalized
-  if (!base.endsWith("/v1")) base = `${base}/v1`
-  return `${base}/chat/completions`
-}
+import { generateWithModel } from "@/lib/ai/generate"
 
 async function callAgent(
   credentials: FocusCredentials,
   messages: Array<{ role: "system" | "user"; content: string }>,
   temperature = 0
 ) {
-  const apiUrl = resolveChatCompletionsUrl(credentials.baseUrl, credentials.urlMode)
-  const headers = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${credentials.apiKey}`,
-  }
-  const requestBody = {
-    model: credentials.model,
-    messages,
+  return await generateWithModel(credentials, messages, {
     temperature,
-    max_tokens: 1600,
-  }
-
-  let response: Response
-  if (credentials.skipSslVerify && apiUrl.startsWith("https://")) {
-    const dispatcher = new Agent({ connect: { rejectUnauthorized: false } })
-    const r = await undiciFetch(apiUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(requestBody),
-      dispatcher,
-    })
-    response = r as unknown as Response
-  } else {
-    response = await fetch(apiUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(requestBody),
-    })
-  }
-
-  const text = await response.text()
-  let json: ChatCompletionResponse
-  try {
-    json = JSON.parse(text) as ChatCompletionResponse
-  } catch {
-    throw new Error(`Non-JSON response from ${apiUrl}`)
-  }
-  if (!response.ok) {
-    throw new Error(json.error?.message || json.message || `HTTP ${response.status}`)
-  }
-
-  return json.choices?.[0]?.message?.content?.trim() || ""
+    maxOutputTokens: 1600,
+  })
 }
 
 function parseJsonFromModel(content: string) {

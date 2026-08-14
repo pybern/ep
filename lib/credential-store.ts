@@ -13,6 +13,12 @@ export interface OpenAICredentials {
   model: string
   sslVerify?: boolean
   urlMode?: "base" | "endpoint"
+  /**
+   * Optional system instructions prepended to every LLM request (chat,
+   * sidebar assistant, focus, knowledge answers). Empty string / undefined
+   * means "use the built-in default system prompt for the caller".
+   */
+  systemPrompt?: string
 }
 
 export interface ADFSCredentials {
@@ -24,10 +30,30 @@ export interface ADFSCredentials {
   resource?: string      // Relying party identifier
 }
 
+/**
+ * Postgres credentials. Supports either a full `connectionString` (e.g. a
+ * PlanetScale / Neon / Supabase URL) OR discrete host/port/db/user/password
+ * fields. `sslMode` controls TLS behaviour - most cloud Postgres providers
+ * (PlanetScale for Postgres, Neon, Supabase) require "require".
+ */
+export interface PostgresCredentials {
+  mode: "connectionString" | "fields"
+  connectionString?: string
+  host?: string
+  port?: number
+  database?: string
+  user?: string
+  password?: string
+  sslMode?: "disable" | "require" | "no-verify"
+  provider?: "planetscale" | "neon" | "supabase" | "generic"
+  embeddingDimensions?: number
+}
+
 export interface StoredCredentials {
   dremio?: DremioCredentials
   openai?: OpenAICredentials
   adfs?: ADFSCredentials
+  postgres?: PostgresCredentials
   lastUpdated?: string
 }
 
@@ -130,4 +156,29 @@ export function clearADFSCredentials(): void {
   const stored = getStoredCredentials()
   delete stored.adfs
   saveCredentials(stored)
+}
+
+export function savePostgresCredentials(credentials: PostgresCredentials): void {
+  const stored = getStoredCredentials()
+  saveCredentials({
+    ...stored,
+    postgres: credentials,
+  })
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("postgres-credentials-updated"))
+  }
+}
+
+export function getPostgresCredentials(): PostgresCredentials | null {
+  const stored = getStoredCredentials()
+  return stored.postgres || null
+}
+
+export function clearPostgresCredentials(): void {
+  const stored = getStoredCredentials()
+  delete stored.postgres
+  saveCredentials(stored)
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("postgres-credentials-updated"))
+  }
 }

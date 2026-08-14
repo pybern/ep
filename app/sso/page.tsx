@@ -1,8 +1,9 @@
 "use client"
 
-import { useState, useEffect, Suspense } from "react"
+import { useState, useEffect, useCallback, Suspense } from "react"
 import { useSearchParams } from "next/navigation"
-import { getADFSCredentials } from "@/lib/credential-store"
+import Link from "next/link"
+import { getADFSCredentials, type ADFSCredentials } from "@/lib/credential-store"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/ui/theme-toggle"
 import { 
@@ -65,12 +66,69 @@ function SSOContent() {
   const [debugLog, setDebugLog] = useState<string[]>([])
   const [hasProcessed, setHasProcessed] = useState(false)
 
-  const addLog = (msg: string) => {
+  const addLog = useCallback((msg: string) => {
     console.log("[SSO]", msg)
     setDebugLog(prev => [...prev, `${new Date().toLocaleTimeString()}: ${msg}`])
-  }
+  }, [])
 
-  // Check for stored token on mount
+  const exchangeCode = useCallback(async (code: string, credentials: ADFSCredentials) => {
+    setStatus("exchanging")
+    addLog("Calling /api/adfs/token...")
+    
+    try {
+      const requestBody = {
+        code,
+        clientId: credentials.clientId,
+        clientSecret: credentials.clientSecret,
+        serverUrl: credentials.serverUrl,
+        redirectUri: credentials.redirectUri,
+        scope: credentials.scope,
+        resource: credentials.resource,
+      }
+      addLog(`Request body: ${JSON.stringify({ ...requestBody, clientSecret: "***", code: code.substring(0, 20) + "..." })}`)
+      
+      const response = await fetch("/api/adfs/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      })
+
+      addLog(`Response status: ${response.status}`)
+      const data = await response.json()
+      addLog(`Response data: ${JSON.stringify(data).substring(0, 200)}...`)
+
+      if (!response.ok || data.error) {
+        addLog(`ERROR: ${data.error || data.error_description || "Unknown error"}`)
+        setStatus("error")
+        setErrorMessage(data.error_description || data.error || data.details || "Failed to exchange code")
+        setTokenResponse(data)
+        return
+      }
+
+      addLog("SUCCESS! Token received")
+      setTokenResponse(data)
+      
+      sessionStorage.setItem("adfs_access_token", JSON.stringify(data))
+      addLog("Token stored in sessionStorage")
+      
+      if (data.access_token) {
+        const decoded = decodeJWT(data.access_token)
+        setDecodedToken(decoded)
+      }
+      
+      setStatus("success")
+      window.history.replaceState(null, "", window.location.pathname)
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : "Failed to exchange code"
+      addLog(`EXCEPTION: ${errorMsg}`)
+      setStatus("error")
+      setErrorMessage(errorMsg)
+    }
+  }, [addLog])
+
+  // Session storage and the callback URL are external inputs that initialize
+  // this state machine when the page mounts.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const storedToken = sessionStorage.getItem("adfs_access_token")
     if (storedToken) {
@@ -88,7 +146,7 @@ function SSOContent() {
         sessionStorage.removeItem("adfs_access_token")
       }
     }
-  }, [])
+  }, [addLog])
 
   useEffect(() => {
     // Skip if already processed or already have a token
@@ -134,74 +192,9 @@ function SSOContent() {
     setHasProcessed(true)
     addLog(`Starting token exchange with server: ${credentials.serverUrl}`)
     // Exchange the code for a token
-    exchangeCode(code, credentials)
-  }, [searchParams, hasProcessed, status])
-
-  const exchangeCode = async (code: string, credentials: { 
-    serverUrl: string
-    clientId: string
-    clientSecret: string
-    redirectUri: string
-    scope?: string
-    resource?: string
-  }) => {
-    setStatus("exchanging")
-    addLog("Calling /api/adfs/token...")
-    
-    try {
-      const requestBody = {
-        code,
-        clientId: credentials.clientId,
-        clientSecret: credentials.clientSecret,
-        serverUrl: credentials.serverUrl,
-        redirectUri: credentials.redirectUri,
-        scope: credentials.scope,
-        resource: credentials.resource,
-      }
-      addLog(`Request body: ${JSON.stringify({ ...requestBody, clientSecret: "***", code: code.substring(0, 20) + "..." })}`)
-      
-      const response = await fetch("/api/adfs/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestBody),
-      })
-
-      addLog(`Response status: ${response.status}`)
-      const data = await response.json()
-      addLog(`Response data: ${JSON.stringify(data).substring(0, 200)}...`)
-
-      if (!response.ok || data.error) {
-        addLog(`ERROR: ${data.error || data.error_description || "Unknown error"}`)
-        setStatus("error")
-        setErrorMessage(data.error_description || data.error || data.details || "Failed to exchange code")
-        setTokenResponse(data)
-        return
-      }
-
-      addLog("SUCCESS! Token received")
-      setTokenResponse(data)
-      
-      // Store token in sessionStorage (persists until browser tab is closed)
-      sessionStorage.setItem("adfs_access_token", JSON.stringify(data))
-      addLog("Token stored in sessionStorage")
-      
-      // Try to decode the access token if it's a JWT
-      if (data.access_token) {
-        const decoded = decodeJWT(data.access_token)
-        setDecodedToken(decoded)
-      }
-      
-      setStatus("success")
-      
-      // Clean up URL - remove the code parameter
-      window.history.replaceState(null, "", window.location.pathname)
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : "Failed to exchange code"
-      addLog(`EXCEPTION: ${errorMsg}`)
-      setStatus("error")
-      setErrorMessage(errorMsg)
-    }
-  }
+    void exchangeCode(code, credentials)
+  }, [addLog, exchangeCode, searchParams, hasProcessed, status])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const handleCopyToken = async () => {
     if (tokenResponse?.access_token) {
@@ -222,7 +215,7 @@ function SSOContent() {
     const credentials = getADFSCredentials()
     
     if (code && credentials) {
-      exchangeCode(code, credentials)
+      void exchangeCode(code, credentials)
     } else {
       setStatus(code ? "no-credentials" : "no-code")
     }
@@ -249,10 +242,10 @@ function SSOContent() {
           </div>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" asChild>
-              <a href="/">
+              <Link href="/">
                 <Home className="h-4 w-4 mr-2" />
                 Home
-              </a>
+              </Link>
             </Button>
             <ThemeToggle />
           </div>

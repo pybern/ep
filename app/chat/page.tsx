@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useChat } from "@ai-sdk/react"
-import { TextStreamChatTransport } from "ai"
+import { DefaultChatTransport } from "ai"
 import { useRouter } from "next/navigation"
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels"
 
@@ -31,19 +31,13 @@ import {
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation"
 import {
-  Queue,
-  QueueItem,
-  QueueItemContent,
-  QueueItemIndicator,
-  QueueList,
-} from "@/components/ai-elements/queue"
-import {
   Message,
   MessageContent,
   MessageResponse,
   MessageActions,
   MessageAction,
 } from "@/components/ai-elements/message"
+import { ReasoningBlock } from "@/components/ai-elements/reasoning"
 import {
   PromptInput,
   PromptInputTextarea,
@@ -57,7 +51,9 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { Spinner } from "@/components/ui/spinner"
+import { ModelSelector } from "@/components/model-selector"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -84,8 +80,18 @@ import {
 import { useChatConversations } from "@/lib/use-chat-history"
 import { syncChatMessages, getChatMessages } from "@/lib/db"
 import { cn } from "@/lib/utils"
+import { useOpenZenModels } from "@/lib/use-openzen-models"
+import { sanitizeAiMarkdown } from "@/lib/ai/markdown"
 import { FocusChartRenderer } from "@/components/focus/chart-renderer"
-import type { FocusBuildResult, FocusReportResult, FocusRunResult } from "@/lib/focus-types"
+import {
+  InvestmentInsightRenderer,
+  useInvestmentInsightMessage,
+} from "@/components/insights/investment-insight-renderer"
+import type {
+  FocusBuildResult,
+  FocusCredentials,
+  FocusRunResult,
+} from "@/lib/focus-types"
 
 // Icons
 import {
@@ -108,6 +114,7 @@ import {
   Play,
   Eye,
   EyeOff,
+  Database,
 } from "lucide-react"
 
 const CHAT_RELEASE_TAG = "v0.1"
@@ -126,6 +133,7 @@ function SettingsPanel({
   const [baseUrl, setBaseUrl] = useState(credentials?.baseUrl || "")
   const [apiKey, setApiKey] = useState(credentials?.apiKey || "")
   const [model, setModel] = useState(credentials?.model || "")
+  const [systemPrompt, setSystemPrompt] = useState(credentials?.systemPrompt || "")
   const [sslVerify, setSslVerify] = useState(credentials?.sslVerify !== false)
   const [urlMode, setUrlMode] = useState<"base" | "endpoint">(credentials?.urlMode || "base")
   const [isTesting, setIsTesting] = useState(false)
@@ -138,6 +146,7 @@ function SettingsPanel({
       model: model.trim(),
       sslVerify,
       urlMode,
+      systemPrompt: systemPrompt.trim() || undefined,
     }
     saveOpenAICredentials(creds)
     onSave(creds)
@@ -249,7 +258,37 @@ function SettingsPanel({
           </div>
           <div className="space-y-2">
             <Label htmlFor="settings-model" className="text-sm">Model</Label>
-            <Input id="settings-model" placeholder="gpt-4o" value={model} onChange={(e) => setModel(e.target.value)} />
+            <ModelSelector
+              id="settings-model"
+              value={model}
+              onChange={setModel}
+              baseUrl={baseUrl}
+              apiKey={apiKey}
+              urlMode={urlMode}
+              skipSslVerify={!sslVerify}
+              suggestions={["gpt-4o-mini", "gpt-4o", "o4-mini", "claude-3-5-sonnet-latest"]}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Pick from the provider catalogue or type a custom id.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="settings-system" className="text-sm flex items-center gap-2">
+              System Instructions
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-normal">
+                optional
+              </span>
+            </Label>
+            <Textarea
+              id="settings-system"
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+              placeholder="Empty = use built-in default. Example: You are a concise SQL analyst..."
+              className="font-mono text-xs min-h-[90px]"
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Prepended to every message sent from this chat.
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <input type="checkbox" id="settings-ssl" checked={!sslVerify} onChange={(e) => setSslVerify(!e.target.checked)} className="rounded border-border" />
@@ -340,27 +379,6 @@ type ChatPerfMetrics = {
   estimatedTokens: number
 }
 
-type InsightQueueStatus = "pending" | "running" | "completed" | "error"
-type InsightQueueItem = {
-  id: "run" | "build" | "report"
-  label: string
-  status: InsightQueueStatus
-}
-
-function createInitialInsightQueue(): InsightQueueItem[] {
-  return [
-    { id: "run", label: "Data agent", status: "pending" },
-    { id: "build", label: "Visualization agent", status: "pending" },
-    { id: "report", label: "Insights agent", status: "pending" },
-  ]
-}
-
-function sanitizeStreamedMarkdown(content: string) {
-  // While streaming, a fence can transiently end as ```s / ```sq before newline.
-  // That can make highlighters treat it as an unknown language token.
-  return content.replace(/```[^\n`]*$/, "```")
-}
-
 function extractCodeBlocks(content: string, messageId: string): ExtractedCodeBlock[] {
   const blocks: ExtractedCodeBlock[] = []
   const fenceRegex = /```([\w-]+)?\n([\s\S]*?)```/g
@@ -403,12 +421,6 @@ function getApiError(data: unknown) {
   return typeof error === "string" && error.trim() ? error : null
 }
 
-function getApiStringField(data: unknown, key: string) {
-  if (!data || typeof data !== "object") return null
-  const value = (data as Record<string, unknown>)[key]
-  return typeof value === "string" ? value : null
-}
-
 async function parseApiResponseOrThrow(
   response: Response,
   endpointLabel: string
@@ -442,7 +454,7 @@ async function parseApiResponseOrThrow(
 }
 
 function ChatMessageMarkdown({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
-  const safeContent = useMemo(() => sanitizeStreamedMarkdown(content), [content])
+  const safeContent = useMemo(() => sanitizeAiMarkdown(content), [content])
   return (
     <MessageResponse className={isStreaming ? "text-sm leading-6" : undefined}>
       {safeContent}
@@ -450,14 +462,66 @@ function ChatMessageMarkdown({ content, isStreaming }: { content: string; isStre
   )
 }
 
+function ChatAssistantResponse({
+  parts,
+  isAssistantStreaming,
+  text,
+}: {
+  parts: Array<{ type: string; text?: string; data?: unknown }>
+  isAssistantStreaming: boolean
+  text: string
+}) {
+  const { spec, hasSpec } = useInvestmentInsightMessage(parts)
+  const hasVisibleResponse = Boolean(text.trim()) || hasSpec
+
+  return (
+    <>
+      <ReasoningBlock
+        parts={parts}
+        isStreaming={isAssistantStreaming && !hasVisibleResponse}
+      />
+      {text ? (
+        <ChatMessageMarkdown content={text} isStreaming={isAssistantStreaming} />
+      ) : null}
+      {hasSpec && spec ? <InvestmentInsightRenderer spec={spec} /> : null}
+    </>
+  )
+}
+
 // ── Suggestion data ──────────────────────────────────────────────────
 
 const SUGGESTIONS = [
-  { icon: Code, label: "Write code", prompt: "Help me write a function that " },
-  { icon: Lightbulb, label: "Explain a concept", prompt: "Explain to me how " },
-  { icon: Zap, label: "Debug an issue", prompt: "Help me debug this issue: " },
-  { icon: PenLine, label: "Draft content", prompt: "Help me write " },
-]
+  {
+    icon: Sparkles,
+    label: "Top active return",
+    prompt: "Which fund had the highest active return?",
+  },
+  {
+    icon: Database,
+    label: "Asset class exposure",
+    prompt: "Show portfolio exposure by asset class.",
+  },
+  {
+    icon: Lightbulb,
+    label: "Highest Sharpe ratio",
+    prompt: "Which portfolios have the highest Sharpe ratio?",
+  },
+  {
+    icon: Zap,
+    label: "Latest market prices",
+    prompt: "What are the latest instrument prices?",
+  },
+  {
+    icon: PenLine,
+    label: "Recent macro data",
+    prompt: "Summarize the latest macroeconomic observations.",
+  },
+  {
+    icon: MessageSquare,
+    label: "Yield curve",
+    prompt: "Compare the latest yield curve points by tenor.",
+  },
+] as const
 
 // ── Main Page ────────────────────────────────────────────────────────
 
@@ -467,7 +531,9 @@ export default function ChatPage() {
   // ── Credentials ──
   const [credentials, setCredentials] = useState<OpenAICredentials | null>(null)
   const [isCredentialsLoading, setIsCredentialsLoading] = useState(true)
+  const openZen = useOpenZenModels()
   const [showSettings, setShowSettings] = useState(false)
+  const [dataMode, setDataMode] = useState(true)
   const credentialsRef = useRef<OpenAICredentials | null>(null)
 
   useEffect(() => {
@@ -489,10 +555,32 @@ export default function ChatPage() {
 
   useEffect(() => { credentialsRef.current = credentials }, [credentials])
 
-  const isConfigured = credentials !== null &&
-    credentials.baseUrl?.trim() !== "" &&
-    credentials.apiKey?.trim() !== "" &&
-    credentials.model?.trim() !== ""
+  const isConfigured = openZen.available
+    ? openZen.selectedModel.trim() !== ""
+    : credentials !== null
+      && credentials.baseUrl?.trim() !== ""
+      && credentials.apiKey?.trim() !== ""
+      && credentials.model?.trim() !== ""
+  const activeModel = openZen.available ? openZen.selectedModel : credentials?.model
+  const focusCredentials = useMemo<FocusCredentials | null>(() => {
+    if (openZen.available && openZen.selectedModel) {
+      return {
+        provider: "openzen",
+        model: openZen.selectedModel,
+      }
+    }
+    if (!credentials?.baseUrl || !credentials.apiKey || !credentials.model) {
+      return null
+    }
+    return {
+      provider: "manual",
+      baseUrl: credentials.baseUrl,
+      apiKey: credentials.apiKey,
+      model: credentials.model,
+      urlMode: credentials.urlMode || "base",
+      skipSslVerify: credentials.sslVerify === false,
+    }
+  }, [credentials, openZen.available, openZen.selectedModel])
 
   // ── Dexie conversations ──
   const { conversations, create, rename, remove } = useChatConversations()
@@ -504,22 +592,25 @@ export default function ChatPage() {
 
   // ── Transport ──
   const transport = useMemo(() => {
-    return new TextStreamChatTransport({
+    return new DefaultChatTransport({
       api: "/api/chatbot",
       // Read credentials at send-time to avoid stale/undefined transport state.
       body: () => ({
+        provider: openZen.available ? "openzen" : "manual",
         baseUrl: credentialsRef.current?.baseUrl,
         apiKey: credentialsRef.current?.apiKey,
-        model: credentialsRef.current?.model,
+        model: openZen.available ? openZen.selectedModel : credentialsRef.current?.model,
         skipSslVerify: credentialsRef.current?.sslVerify === false,
         urlMode: credentialsRef.current?.urlMode || "base",
+        systemPrompt: credentialsRef.current?.systemPrompt,
+        dataMode,
       }),
     })
-  }, [])
+  }, [dataMode, openZen.available, openZen.selectedModel])
 
   const chatId = useMemo(() => "chatbot-main", [])
 
-  const { messages, setMessages, sendMessage, regenerate, status, error, stop } =
+  const { messages, setMessages, sendMessage, regenerate, status, error } =
     useChat({
       id: chatId,
       transport,
@@ -545,25 +636,13 @@ export default function ChatPage() {
     return map
   }, [messages])
 
-  const previousUserTextByMessageId = useMemo(() => {
-    const map = new Map<string, string>()
-    let previousUserText = ""
-    for (const message of messages) {
-      map.set(message.id, previousUserText)
-      if (message.role === "user") {
-        previousUserText = messageTextById.get(message.id) || ""
-      }
-    }
-    return map
-  }, [messages, messageTextById])
-
   const getCodeBlocksForMessage = useCallback((messageId: string, textContent: string) => {
     if (!textContent) return []
     const cached = codeBlocksCacheRef.current.get(messageId)
     if (cached && cached.text === textContent) {
       return cached.blocks
     }
-    const blocks = extractCodeBlocks(sanitizeStreamedMarkdown(textContent), messageId)
+    const blocks = extractCodeBlocks(sanitizeAiMarkdown(textContent), messageId)
     codeBlocksCacheRef.current.set(messageId, { text: textContent, blocks })
     return blocks
   }, [])
@@ -585,16 +664,13 @@ export default function ChatPage() {
   const [focusEditorCode, setFocusEditorCode] = useState("")
   const [focusRunResult, setFocusRunResult] = useState<FocusRunResult | null>(null)
   const [focusBuildResult, setFocusBuildResult] = useState<FocusBuildResult | null>(null)
-  const [focusReportResult, setFocusReportResult] = useState<FocusReportResult | null>(null)
-  const [focusResultsTab, setFocusResultsTab] = useState<"run" | "build" | "report">("run")
-  const [focusRawTabVisibility, setFocusRawTabVisibility] = useState<Record<"run" | "build" | "report", boolean>>({
+  const [focusResultsTab, setFocusResultsTab] = useState<"run" | "build">("run")
+  const [focusRawTabVisibility, setFocusRawTabVisibility] = useState<Record<"run" | "build", boolean>>({
     run: false,
     build: false,
-    report: false,
   })
   const [isRunningMock, setIsRunningMock] = useState(false)
   const [isBuildingViz, setIsBuildingViz] = useState(false)
-  const [isGeneratingReport, setIsGeneratingReport] = useState(false)
   const [autoBuildAfterRun, setAutoBuildAfterRun] = useState(true)
   const [focusError, setFocusError] = useState<string | null>(null)
   const [focusCopied, setFocusCopied] = useState(false)
@@ -602,18 +678,6 @@ export default function ChatPage() {
   const [summarizingIds, setSummarizingIds] = useState<Record<string, boolean>>({})
   const focusEditorTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const focusEditorHighlightRef = useRef<HTMLDivElement | null>(null)
-  const [isInsightSheetOpen, setIsInsightSheetOpen] = useState(false)
-  const [isGeneratingInsight, setIsGeneratingInsight] = useState(false)
-  const [insightProgressLabel, setInsightProgressLabel] = useState("")
-  const [insightQueue, setInsightQueue] = useState<InsightQueueItem[]>(createInitialInsightQueue)
-  const [insightReport, setInsightReport] = useState<{
-    title: string
-    reportMarkdown: string
-    messageId: string
-  } | null>(null)
-  const [insightRunResult, setInsightRunResult] = useState<FocusRunResult | null>(null)
-  const [insightBuildResult, setInsightBuildResult] = useState<FocusBuildResult | null>(null)
-  const [insightError, setInsightError] = useState<string | null>(null)
 
   const selectedCodeBlock = useMemo(
     () => assistantCodeBlocks.find((b) => b.id === selectedCodeBlockId) || null,
@@ -632,9 +696,8 @@ export default function ChatPage() {
       setFocusEditorCode(next.code)
       setFocusRunResult(null)
       setFocusBuildResult(null)
-      setFocusReportResult(null)
       setFocusResultsTab("run")
-      setFocusRawTabVisibility({ run: false, build: false, report: false })
+      setFocusRawTabVisibility({ run: false, build: false })
       setFocusError(null)
     }
   }, [assistantCodeBlocks, selectedCodeBlockId, isFocusModeOpen])
@@ -644,11 +707,10 @@ export default function ChatPage() {
     setFocusEditorCode(selectedCodeBlock.code)
     setFocusRunResult(null)
     setFocusBuildResult(null)
-    setFocusReportResult(null)
     setFocusResultsTab("run")
-    setFocusRawTabVisibility({ run: false, build: false, report: false })
+    setFocusRawTabVisibility({ run: false, build: false })
     setFocusError(null)
-  }, [selectedCodeBlock?.id])
+  }, [selectedCodeBlock])
 
   const openFocusMode = useCallback((blockId?: string) => {
     if (assistantCodeBlocks.length === 0) return
@@ -659,17 +721,16 @@ export default function ChatPage() {
       setFocusEditorCode(targetBlock.code)
       setFocusRunResult(null)
       setFocusBuildResult(null)
-      setFocusReportResult(null)
       setFocusResultsTab("run")
-      setFocusRawTabVisibility({ run: false, build: false, report: false })
+      setFocusRawTabVisibility({ run: false, build: false })
       setFocusError(null)
     }
     setIsFocusModeOpen(true)
   }, [assistantCodeBlocks, selectedCodeBlockId])
 
   const requestBuildForRunResult = useCallback(async (runResult: FocusRunResult) => {
-    if (!credentials?.baseUrl || !credentials?.apiKey || !credentials?.model) {
-      throw new Error("Configure API credentials before building visualization.")
+    if (!focusCredentials) {
+      throw new Error("Configure a model provider before building visualization.")
     }
 
     const response = await fetch("/api/focus/build", {
@@ -677,13 +738,7 @@ export default function ChatPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         runResult,
-        credentials: {
-          baseUrl: credentials.baseUrl,
-          apiKey: credentials.apiKey,
-          model: credentials.model,
-          urlMode: credentials.urlMode || "base",
-          skipSslVerify: credentials.sslVerify === false,
-        },
+        credentials: focusCredentials,
       }),
     })
     const data = await parseApiResponseOrThrow(response, "Build endpoint")
@@ -691,19 +746,18 @@ export default function ChatPage() {
       throw new Error(getApiError(data) || `Build failed (${response.status})`)
     }
     return data as FocusBuildResult
-  }, [credentials])
+  }, [focusCredentials])
 
   const runMockData = useCallback(async () => {
     if (!selectedCodeBlock) return
-    if (!credentials?.baseUrl || !credentials?.apiKey || !credentials?.model) {
-      setFocusError("Configure API credentials before running focus mode agents.")
+    if (!focusCredentials) {
+      setFocusError("Configure a model provider before running focus mode agents.")
       return
     }
 
     setIsRunningMock(true)
     setFocusError(null)
     setFocusBuildResult(null)
-    setFocusReportResult(null)
     try {
       const response = await fetch("/api/focus/run", {
         method: "POST",
@@ -712,13 +766,7 @@ export default function ChatPage() {
           language: selectedCodeBlock.language,
           code: focusEditorCode,
           rowLimit: 50,
-          credentials: {
-            baseUrl: credentials.baseUrl,
-            apiKey: credentials.apiKey,
-            model: credentials.model,
-            urlMode: credentials.urlMode || "base",
-            skipSslVerify: credentials.sslVerify === false,
-          },
+          credentials: focusCredentials,
         }),
       })
       const data = await parseApiResponseOrThrow(response, "Run endpoint")
@@ -744,7 +792,7 @@ export default function ChatPage() {
     } finally {
       setIsRunningMock(false)
     }
-  }, [autoBuildAfterRun, credentials, focusEditorCode, requestBuildForRunResult, selectedCodeBlock])
+  }, [autoBuildAfterRun, focusCredentials, focusEditorCode, requestBuildForRunResult, selectedCodeBlock])
 
   const buildVisualization = useCallback(async () => {
     if (!focusRunResult) return
@@ -761,46 +809,6 @@ export default function ChatPage() {
     }
   }, [focusRunResult, requestBuildForRunResult])
 
-  const generateReport = useCallback(async () => {
-    if (!selectedCodeBlock || !focusRunResult) return
-    if (!credentials?.baseUrl || !credentials?.apiKey || !credentials?.model) {
-      setFocusError("Configure API credentials before generating report.")
-      return
-    }
-
-    setIsGeneratingReport(true)
-    setFocusError(null)
-    try {
-      const response = await fetch("/api/focus/report", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          language: selectedCodeBlock.language,
-          code: focusEditorCode,
-          runResult: focusRunResult,
-          buildResult: focusBuildResult || undefined,
-          credentials: {
-            baseUrl: credentials.baseUrl,
-            apiKey: credentials.apiKey,
-            model: credentials.model,
-            urlMode: credentials.urlMode || "base",
-            skipSslVerify: credentials.sslVerify === false,
-          },
-        }),
-      })
-      const data = await parseApiResponseOrThrow(response, "Report endpoint")
-      if (!response.ok) {
-        throw new Error(getApiError(data) || `Report failed (${response.status})`)
-      }
-      setFocusReportResult(data as FocusReportResult)
-      setFocusResultsTab("report")
-    } catch (error) {
-      setFocusError(error instanceof Error ? error.message : "Report failed")
-    } finally {
-      setIsGeneratingReport(false)
-    }
-  }, [credentials, focusBuildResult, focusEditorCode, focusRunResult, selectedCodeBlock])
-
   const copyFocusCode = useCallback(async () => {
     if (!focusEditorCode.trim()) return
     await navigator.clipboard.writeText(focusEditorCode)
@@ -808,7 +816,7 @@ export default function ChatPage() {
     setTimeout(() => setFocusCopied(false), 1200)
   }, [focusEditorCode])
 
-  const toggleFocusRawTab = useCallback((tab: "run" | "build" | "report") => {
+  const toggleFocusRawTab = useCallback((tab: "run" | "build") => {
     setFocusRawTabVisibility((prev) => ({
       ...prev,
       [tab]: !prev[tab],
@@ -821,132 +829,6 @@ export default function ChatPage() {
       [messageId]: !prev[messageId],
     }))
   }, [])
-
-  const generateChatInsightReport = useCallback(async (messageId: string, assistantResponse: string, userPrompt?: string) => {
-    if (!credentials?.baseUrl || !credentials?.apiKey || !credentials?.model) {
-      setInsightError("Configure API credentials before generating an insights report.")
-      setIsInsightSheetOpen(true)
-      return
-    }
-
-    const codeBlocks = extractCodeBlocks(sanitizeStreamedMarkdown(assistantResponse), messageId)
-    const firstCodeBlock = codeBlocks[0]
-    if (!firstCodeBlock) {
-      setInsightError("No code block found in this response. Insights report requires code output data.")
-      setIsInsightSheetOpen(true)
-      return
-    }
-
-    setIsInsightSheetOpen(true)
-    setIsGeneratingInsight(true)
-    setInsightProgressLabel("Running data agent...")
-    setInsightQueue([
-      { id: "run", label: "Data agent", status: "running" },
-      { id: "build", label: "Visualization agent", status: "pending" },
-      { id: "report", label: "Insights agent", status: "pending" },
-    ])
-    setInsightError(null)
-    setInsightReport(null)
-    setInsightRunResult(null)
-    setInsightBuildResult(null)
-    try {
-      const runResponse = await fetch("/api/focus/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          language: firstCodeBlock.language,
-          code: firstCodeBlock.code,
-          intent: userPrompt,
-          rowLimit: 50,
-          credentials: {
-            baseUrl: credentials.baseUrl,
-            apiKey: credentials.apiKey,
-            model: credentials.model,
-            urlMode: credentials.urlMode || "base",
-            skipSslVerify: credentials.sslVerify === false,
-          },
-        }),
-      })
-      const runData = await parseApiResponseOrThrow(runResponse, "Run endpoint")
-      if (!runResponse.ok) {
-        throw new Error(getApiError(runData) || `Run failed (${runResponse.status})`)
-      }
-      setInsightRunResult(runData as FocusRunResult)
-      setInsightQueue([
-        { id: "run", label: "Data agent", status: "completed" },
-        { id: "build", label: "Visualization agent", status: "running" },
-        { id: "report", label: "Insights agent", status: "pending" },
-      ])
-
-      setInsightProgressLabel("Building visualization context...")
-      const buildResponse = await fetch("/api/focus/build", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          runResult: runData,
-          credentials: {
-            baseUrl: credentials.baseUrl,
-            apiKey: credentials.apiKey,
-            model: credentials.model,
-            urlMode: credentials.urlMode || "base",
-            skipSslVerify: credentials.sslVerify === false,
-          },
-        }),
-      })
-      const buildData = await parseApiResponseOrThrow(buildResponse, "Build endpoint")
-      if (!buildResponse.ok) {
-        throw new Error(getApiError(buildData) || `Build failed (${buildResponse.status})`)
-      }
-      setInsightBuildResult(buildData as FocusBuildResult)
-      setInsightQueue([
-        { id: "run", label: "Data agent", status: "completed" },
-        { id: "build", label: "Visualization agent", status: "completed" },
-        { id: "report", label: "Insights agent", status: "running" },
-      ])
-
-      setInsightProgressLabel("Generating insights report...")
-      const reportResponse = await fetch("/api/focus/report", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          language: firstCodeBlock.language,
-          code: firstCodeBlock.code,
-          runResult: runData,
-          buildResult: buildData,
-          credentials: {
-            baseUrl: credentials.baseUrl,
-            apiKey: credentials.apiKey,
-            model: credentials.model,
-            urlMode: credentials.urlMode || "base",
-            skipSslVerify: credentials.sslVerify === false,
-          },
-        }),
-      })
-      const reportData = await parseApiResponseOrThrow(reportResponse, "Report endpoint")
-      if (!reportResponse.ok) {
-        throw new Error(getApiError(reportData) || `Report failed (${reportResponse.status})`)
-      }
-
-      setInsightReport({
-        title: getApiStringField(reportData, "title") || "Insights Report",
-        reportMarkdown: getApiStringField(reportData, "reportMarkdown") || "No report content generated.",
-        messageId,
-      })
-      setInsightQueue([
-        { id: "run", label: "Data agent", status: "completed" },
-        { id: "build", label: "Visualization agent", status: "completed" },
-        { id: "report", label: "Insights agent", status: "completed" },
-      ])
-    } catch (error) {
-      setInsightError(error instanceof Error ? error.message : "Failed to generate insights report")
-      setInsightQueue((prev) => prev.map((item) => (
-        item.status === "running" ? { ...item, status: "error" } : item
-      )))
-    } finally {
-      setIsGeneratingInsight(false)
-      setInsightProgressLabel("")
-    }
-  }, [credentials])
 
   const syncFocusEditorScroll = useCallback(() => {
     if (!focusEditorTextareaRef.current || !focusEditorHighlightRef.current) return
@@ -1122,6 +1004,7 @@ export default function ChatPage() {
   const handleNewChat = useCallback(() => {
     setActiveConversationId(null)
     setMessages([])
+    setDataMode(true)
     prevMessagesLenRef.current = 0
   }, [setMessages])
 
@@ -1141,7 +1024,7 @@ export default function ChatPage() {
 
   // ── Send ──
   const handleSubmit = useCallback(async (message: PromptInputMessage) => {
-    if (!message.text?.trim() || !credentials) return
+    if (!message.text?.trim() || !isConfigured) return
 
     // If no active conversation, create one
     let convId = activeConversationId
@@ -1155,7 +1038,7 @@ export default function ChatPage() {
     startChatMetricsTracking()
     sendMessage({ text: message.text })
     setInputText("")
-  }, [credentials, activeConversationId, create, sendMessage, startChatMetricsTracking])
+  }, [isConfigured, activeConversationId, create, sendMessage, startChatMetricsTracking])
 
   // ── Rename ──
   const handleRenameSubmit = useCallback(async () => {
@@ -1195,11 +1078,12 @@ export default function ChatPage() {
   // ── Suggestion click ──
   const [inputText, setInputText] = useState("")
   const handleSuggestionClick = useCallback((suggestion: string) => {
+    setDataMode(true)
     setInputText(suggestion)
   }, [])
 
   // ── Loading ──
-  if (isCredentialsLoading) {
+  if (isCredentialsLoading || openZen.isLoading) {
     return (
       <div className="fixed inset-0 bg-background flex items-center justify-center">
         <Sparkles className="h-8 w-8 text-primary animate-pulse" />
@@ -1336,15 +1220,25 @@ export default function ChatPage() {
           <SidebarFooter className="p-3 border-t border-border/50">
             <SidebarMenu>
               <SidebarMenuItem>
-                <SidebarMenuButton onClick={() => setShowSettings(true)} className="text-xs">
+                <SidebarMenuButton onClick={() => router.push("/settings?tab=setup&focus=ai")} className="text-xs">
                   <Settings className="h-3.5 w-3.5" />
                   <span>Settings</span>
                   {isConfigured && (
                     <span className="ml-auto flex items-center gap-1.5 text-[10px] text-muted-foreground">
                       <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
-                      {credentials?.model}
+                      {activeModel}
                     </span>
                   )}
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  onClick={() => setShowSettings(true)}
+                  className="text-xs"
+                  title="Quick edit credentials without leaving the chat"
+                >
+                  <Settings className="h-3.5 w-3.5" />
+                  <span>Quick settings</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
               <SidebarMenuItem>
@@ -1367,6 +1261,18 @@ export default function ChatPage() {
                 : "New chat"
               }
             </span>
+            {openZen.available && (
+              <ModelSelector
+                value={openZen.selectedModel}
+                onChange={openZen.setSelectedModel}
+                suggestions={openZen.models.map((model) => model.id)}
+                allowCustom={false}
+                showRefresh={false}
+                disabled={openZen.isLoading}
+                placeholder="Select a Zen model"
+                className="w-[min(22rem,40vw)]"
+              />
+            )}
             <ThemeToggle />
           </header>
 
@@ -1381,10 +1287,15 @@ export default function ChatPage() {
                 <p className="text-muted-foreground mb-6 leading-relaxed">
                   Connect to any OpenAI-compatible API to start chatting. Your credentials are stored locally.
                 </p>
-                <Button size="lg" onClick={() => setShowSettings(true)} className="gap-2">
-                  <Settings className="h-4 w-4" />
-                  Configure API
-                </Button>
+                <div className="flex items-center gap-2 justify-center">
+                  <Button size="lg" onClick={() => router.push("/settings?tab=setup&focus=ai")} className="gap-2">
+                    <Settings className="h-4 w-4" />
+                    Open Settings
+                  </Button>
+                  <Button size="lg" variant="outline" onClick={() => setShowSettings(true)} className="gap-2">
+                    Quick config
+                  </Button>
+                </div>
               </div>
             </div>
           ) : (
@@ -1398,7 +1309,6 @@ export default function ChatPage() {
                   {messages.length === 0 ? null : (
                     messages.map((message, idx) => {
                       const textContent = messageTextById.get(message.id) || ""
-                      const previousUserMessageText = previousUserTextByMessageId.get(message.id) || ""
                       const isStreamingAssistantMessage =
                         status === "streaming" &&
                         message.role === "assistant" &&
@@ -1411,10 +1321,22 @@ export default function ChatPage() {
                         <div key={message.id}>
                           <Message from={message.role} className={message.role === "assistant" ? "max-w-full" : undefined}>
                             <MessageContent className={message.role === "assistant" ? "w-full" : undefined}>
-                              {textContent ? (
+                              {textContent || message.role === "assistant" ? (
                                 <>
-                                  <ChatMessageMarkdown content={textContent} isStreaming={isStreamingAssistantMessage} />
-                                  {rawResponseVisibility[message.id] && (
+                                  {message.role === "assistant" ? (
+                                    <ChatAssistantResponse
+                                      parts={message.parts as Array<{
+                                        type: string
+                                        text?: string
+                                        data?: unknown
+                                      }>}
+                                      isAssistantStreaming={isStreamingAssistantMessage}
+                                      text={textContent}
+                                    />
+                                  ) : textContent ? (
+                                    <ChatMessageMarkdown content={textContent} />
+                                  ) : null}
+                                  {textContent && rawResponseVisibility[message.id] && (
                                     <div className="mt-2 rounded-md border border-border/60 bg-muted/30 p-3">
                                       <p className="mb-2 text-[11px] font-medium text-muted-foreground">
                                         {message.role === "assistant" ? "Raw response" : "Raw input"}
@@ -1467,14 +1389,6 @@ export default function ChatPage() {
                                     : <Eye className="h-3 w-3" />
                                   }
                                 </MessageAction>
-                                {message.role === "assistant" && (
-                                  <MessageAction
-                                    tooltip="Generate report from output data"
-                                    onClick={() => generateChatInsightReport(message.id, textContent, previousUserMessageText)}
-                                  >
-                                    <Sparkles className="h-3 w-3" />
-                                  </MessageAction>
-                                )}
                                 {messageCodeBlocks.length > 0 && (
                                   <MessageAction
                                     tooltip="Open in focus mode"
@@ -1536,21 +1450,27 @@ export default function ChatPage() {
                       <div className="space-y-1 text-center">
                         <h3 className="font-semibold text-2xl">How can I help you today?</h3>
                         <p className="text-muted-foreground text-base">
-                          Ask me anything — code, explanations, debugging, writing, and more.
+                          Query the seeded Supabase investment datasets.
                         </p>
                       </div>
-                      <div className="grid grid-cols-2 gap-2 w-full max-w-md">
+                      <div className="grid grid-cols-1 gap-2 w-full max-w-2xl sm:grid-cols-2">
                         {SUGGESTIONS.map((s) => (
                           <button
                             key={s.label}
+                            type="button"
                             onClick={() => handleSuggestionClick(s.prompt)}
                             className={cn(
                               "flex items-center gap-2.5 px-4 py-3 rounded-xl text-left text-sm",
                               "border border-border/50 bg-card/50",
-                              "hover:bg-accent/50 hover:border-border transition-all group"
+                              "transition-[color,background-color,border-color,box-shadow] duration-150",
+                              "hover:bg-accent/50 hover:border-primary/25 hover:shadow-sm",
+                              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 group"
                             )}
                           >
-                            <s.icon className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
+                            <s.icon
+                              aria-hidden="true"
+                              className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors shrink-0"
+                            />
                             <span className="text-muted-foreground group-hover:text-foreground transition-colors">
                               {s.label}
                             </span>
@@ -1564,24 +1484,36 @@ export default function ChatPage() {
                     className="chat-prompt-neutral bg-white dark:bg-card shadow-lg rounded-2xl overflow-hidden"
                   >
                     <PromptInputTextarea
-                      placeholder="Send a message..."
+                      placeholder="Send a message…"
                       value={inputText}
                       onChange={(e) => setInputText(e.target.value)}
                       className="px-5 py-4"
                     />
                     <PromptInputFooter>
-                      <PromptInputTools />
+                      <PromptInputTools>
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant={dataMode ? "secondary" : "ghost"}
+                          onClick={() => setDataMode((enabled) => !enabled)}
+                          className="gap-1.5 text-[11px]"
+                          aria-pressed={dataMode}
+                        >
+                          <Database aria-hidden="true" className="h-3 w-3" />
+                          {dataMode ? "Supabase data" : "General chat"}
+                        </Button>
+                      </PromptInputTools>
                       <PromptInputSubmit
                         status={status === "streaming" ? "streaming" : status === "submitted" ? "submitted" : "ready"}
-                        disabled={!inputText.trim() || status === "streaming" || status === "submitted"}
+                        disabled={!inputText.trim() || !isConfigured || status === "streaming" || status === "submitted"}
                       />
                     </PromptInputFooter>
                   </PromptInput>
                   <p className="text-[11px] text-muted-foreground/50 mt-2 text-center">
                     Enter to send, Shift+Enter for new line
-                    {credentials?.model && (
+                    {activeModel && (
                       <span className="ml-1">
-                        · Using <span className="text-muted-foreground">{credentials.model}</span>
+                        · Using <span className="text-muted-foreground">{activeModel}</span>
                       </span>
                     )}
                   </p>
@@ -1593,89 +1525,17 @@ export default function ChatPage() {
       </SidebarProvider>
 
       <Sheet
-        open={isInsightSheetOpen}
-        onOpenChange={(open) => {
-          setIsInsightSheetOpen(open)
-          if (!open) {
-            setInsightError(null)
-            setIsGeneratingInsight(false)
-            setInsightProgressLabel("")
-            setInsightQueue(createInitialInsightQueue())
-            setInsightRunResult(null)
-            setInsightBuildResult(null)
-          }
-        }}
-      >
-        <SheetContent side="right" className="!w-screen !max-w-none sm:!max-w-none sm:!w-screen !h-screen border-l-0 p-0 gap-0">
-          <SheetHeader className="border-b border-border/50 px-5 py-4">
-            <SheetTitle className="flex items-center gap-2 text-base">
-              <Sparkles className="h-4 w-4 text-primary" />
-              {insightReport?.title || "Insights Report"}
-            </SheetTitle>
-            <SheetDescription>
-              Auto-generated analysis from this response and its chat context.
-            </SheetDescription>
-          </SheetHeader>
-          <div className="min-h-0 flex-1 overflow-auto p-6">
-            <Queue className="mx-auto mb-4 w-full max-w-5xl p-3">
-              <p className="mb-2 text-[11px] uppercase tracking-wide text-muted-foreground">Agent queue</p>
-              <QueueList>
-                <ul className="space-y-1.5 pr-2">
-                  {insightQueue.map((item) => (
-                    <QueueItem key={item.id}>
-                      <QueueItemIndicator status={item.status} />
-                      <QueueItemContent status={item.status}>{item.label}</QueueItemContent>
-                    </QueueItem>
-                  ))}
-                </ul>
-              </QueueList>
-            </Queue>
-            {insightError ? (
-              <div className="mx-auto w-full max-w-5xl rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-                {insightError}
-              </div>
-            ) : insightReport ? (
-              <div className="mx-auto w-full max-w-5xl space-y-4">
-                {insightBuildResult && insightRunResult && (
-                  <div className="rounded-xl border border-border/60 bg-card/30 p-4">
-                    <p className="mb-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-                      Visualization
-                    </p>
-                    <FocusChartRenderer
-                      spec={insightBuildResult.chartSpec}
-                      rows={insightRunResult.rows}
-                    />
-                  </div>
-                )}
-                <div className="rounded-xl border border-border/60 bg-card/30 p-5">
-                  <MessageResponse>{insightReport.reportMarkdown}</MessageResponse>
-                </div>
-              </div>
-            ) : (
-              <div className="mx-auto w-full max-w-5xl text-sm text-muted-foreground">
-                {isGeneratingInsight
-                  ? (insightProgressLabel || "Building report...")
-                  : "Select the sparkles action on a response to generate an insights report."}
-              </div>
-            )}
-          </div>
-        </SheetContent>
-      </Sheet>
-
-      <Sheet
         open={isFocusModeOpen}
         onOpenChange={(open) => {
           setIsFocusModeOpen(open)
           if (!open) {
             setFocusRunResult(null)
             setFocusBuildResult(null)
-            setFocusReportResult(null)
             setFocusResultsTab("run")
-            setFocusRawTabVisibility({ run: false, build: false, report: false })
+            setFocusRawTabVisibility({ run: false, build: false })
             setFocusError(null)
             setIsRunningMock(false)
             setIsBuildingViz(false)
-            setIsGeneratingReport(false)
           }
         }}
       >
@@ -1769,25 +1629,6 @@ export default function ChatPage() {
                             size="sm"
                             variant="outline"
                             className="h-7 text-xs gap-1.5"
-                            onClick={generateReport}
-                            disabled={isGeneratingReport || !focusRunResult}
-                          >
-                            {isGeneratingReport ? (
-                              <>
-                                <Spinner className="h-3.5 w-3.5" />
-                                Reporting...
-                              </>
-                            ) : (
-                              <>
-                                <Sparkles className="h-3.5 w-3.5" />
-                                Report
-                              </>
-                            )}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7 text-xs gap-1.5"
                             onClick={copyFocusCode}
                           >
                             {focusCopied ? <Check className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
@@ -1853,10 +1694,10 @@ ${focusEditorCode || " "}
                       </div>
                     )}
 
-                    {(focusRunResult || focusBuildResult || focusReportResult) ? (
+                    {(focusRunResult || focusBuildResult) ? (
                       <Tabs
                         value={focusResultsTab}
-                        onValueChange={(value) => setFocusResultsTab(value as "run" | "build" | "report")}
+                        onValueChange={(value) => setFocusResultsTab(value as "run" | "build")}
                         className="h-full min-h-0 flex flex-col"
                       >
                         <div className="px-3 py-2 border-b border-[0.5px] border-border/40 bg-card/40 shrink-0">
@@ -1866,9 +1707,6 @@ ${focusEditorCode || " "}
                             </TabsTrigger>
                             <TabsTrigger value="build" className="text-xs px-3" disabled={!focusBuildResult}>
                               Build
-                            </TabsTrigger>
-                            <TabsTrigger value="report" className="text-xs px-3" disabled={!focusReportResult}>
-                              Report
                             </TabsTrigger>
                           </TabsList>
                         </div>
@@ -1977,39 +1815,6 @@ ${focusEditorCode || " "}
                           )}
                         </TabsContent>
 
-                        <TabsContent value="report" className="m-0 flex-1 min-h-0 overflow-auto">
-                          {focusReportResult ? (
-                            <div className="p-4 space-y-3">
-                              <div className="text-xs text-muted-foreground flex items-center justify-between gap-2">
-                                <span>{focusReportResult.title}</span>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="h-6 text-[11px] px-2 gap-1"
-                                  onClick={() => toggleFocusRawTab("report")}
-                                >
-                                  {focusRawTabVisibility.report ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-                                  {focusRawTabVisibility.report ? "Hide raw" : "View raw response"}
-                                </Button>
-                              </div>
-                              {focusRawTabVisibility.report && (
-                                <div className="rounded-md border border-border/60 bg-muted/30 p-3">
-                                  <p className="mb-2 text-[11px] font-medium text-muted-foreground">Raw response</p>
-                                  <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5">
-                                    {focusReportResult.rawResponse || "No raw response available."}
-                                  </pre>
-                                </div>
-                              )}
-                              <div className="rounded-md border border-border/50 bg-card/20 p-3">
-                                <MessageResponse>{focusReportResult.reportMarkdown}</MessageResponse>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="p-4 text-xs text-muted-foreground">
-                              Generate a report after running results.
-                            </div>
-                          )}
-                        </TabsContent>
                       </Tabs>
                     ) : (
                       <div className="h-full flex items-center justify-center text-sm text-muted-foreground">

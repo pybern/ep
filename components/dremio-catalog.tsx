@@ -45,7 +45,6 @@ import {
   X,
   StickyNote,
   Plus,
-  Link,
   Unlink,
   Filter,
 } from "lucide-react"
@@ -690,6 +689,8 @@ export function DremioCatalog({
         children: []
       }))
     }
+  // Tree updates use a pure local helper whose identity is irrelevant.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [credentials])
 
   /**
@@ -737,6 +738,8 @@ export function DremioCatalog({
         fields: []
       }))
     }
+  // Tree updates use a pure local helper whose identity is irrelevant.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [credentials])
 
   /**
@@ -850,6 +853,8 @@ export function DremioCatalog({
         console.log(`[Catalog] ✓ Finished selecting children. Total selected: ${newItems.length} items`)
       }
     }
+  // Recursive catalog loading is a local helper driven by the listed state.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [credentials, selectedItems, selectedItemsMap, onSelectionChange])
 
   /**

@@ -1,15 +1,26 @@
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
-import { streamText, convertToModelMessages, type UIMessage, type ModelMessage } from "ai"
-import { Agent, fetch as undiciFetch } from "undici"
+import {
+  createUIMessageStreamResponse,
+  streamText,
+  generateText,
+  convertToModelMessages,
+  type UIMessage,
+  type UIMessageChunk,
+  type ModelMessage,
+} from "ai"
+import { SPEC_DATA_PART_TYPE } from "@json-render/core"
+import { buildInvestmentInsightSpec } from "@/lib/ai/investment-insight-catalog"
+import { ModelSelectionSchema, resolveLanguageModel } from "@/lib/ai/model-provider"
+import {
+  DEFAULT_INVESTMENT_DATA_CONTEXT,
+  buildAnswerEvidence,
+  buildCatalog,
+  buildPlannerInstructions,
+  executeDataPlan,
+  parseDataPlan,
+} from "@/lib/supabase/data-qa"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
-
-const insecureAgent = new Agent({
-  connect: {
-    rejectUnauthorized: false,
-  },
-})
 
 const SYSTEM_PROMPT = `You are a helpful, knowledgeable, and friendly AI assistant. You excel at:
 
@@ -46,29 +57,32 @@ function trimMessagesToBudget(messages: ModelMessage[], budgetChars: number) {
   return selected.reverse()
 }
 
-function resolveProviderBaseUrl(baseUrl: string, urlMode?: "base" | "endpoint") {
-  const normalized = baseUrl.trim().replace(/\/+$/, "")
-
-  if (urlMode === "endpoint") {
-    // Convert full endpoint (.../chat/completions) back to provider base URL.
-    return normalized.replace(/\/chat\/completions$/i, "")
-  }
-
-  if (normalized.endsWith("/v1")) {
-    return normalized
-  }
-  return `${normalized}/v1`
-}
-
 export async function POST(req: Request) {
   const requestStartedAt = Date.now()
   try {
     const body = await req.json()
-    const { messages, baseUrl, apiKey, model, skipSslVerify, systemPrompt, urlMode } = body
-
-    if (!baseUrl || !apiKey || !model) {
+    const {
+      messages,
+      provider,
+      baseUrl,
+      apiKey,
+      model,
+      skipSslVerify,
+      systemPrompt,
+      urlMode,
+      dataMode,
+    } = body
+    const modelSelection = ModelSelectionSchema.safeParse({
+      provider,
+      baseUrl,
+      apiKey,
+      model,
+      skipSslVerify,
+      urlMode,
+    })
+    if (!modelSelection.success) {
       return new Response(
-        JSON.stringify({ error: "Missing required credentials (baseUrl, apiKey, model)" }),
+        JSON.stringify({ error: "Invalid model provider configuration" }),
         { status: 400, headers: { "Content-Type": "application/json" } }
       )
     }
@@ -83,50 +97,29 @@ export async function POST(req: Request) {
     const modelMessages = await convertToModelMessages(messages as UIMessage[])
 
     const trimmedMessages = trimMessagesToBudget(modelMessages, CONTEXT_CHAR_BUDGET)
-    const messagesWithSystem: ModelMessage[] = [
-      { role: "system", content: systemPrompt || SYSTEM_PROMPT },
-      ...trimmedMessages,
-    ]
+    const languageModel = await resolveLanguageModel(modelSelection.data)
+    let instructions = systemPrompt || SYSTEM_PROMPT
+    let insightSpec: ReturnType<typeof buildInvestmentInsightSpec> = null
 
-    const providerBaseUrl = resolveProviderBaseUrl(baseUrl, urlMode)
+    if (dataMode === true) {
+      const catalog = buildCatalog(DEFAULT_INVESTMENT_DATA_CONTEXT)
+      const planned = await generateText({
+        model: languageModel,
+        instructions: buildPlannerInstructions(catalog),
+        messages: trimmedMessages,
+        temperature: 0,
+        maxOutputTokens: 1_200,
+      })
+      const plan = parseDataPlan(planned.text, catalog)
+      const results = await executeDataPlan(plan)
+      insightSpec = buildInvestmentInsightSpec(results)
+      instructions += `
 
-    // Custom fetch for SSL bypass
-    const customFetch = skipSslVerify
-      ? async (input: RequestInfo | URL, init?: RequestInit) => {
-          const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url
-
-          let headers: Record<string, string> = {}
-          if (init?.headers) {
-            if (init.headers instanceof Headers) {
-              init.headers.forEach((value, key) => {
-                headers[key] = value
-              })
-            } else if (Array.isArray(init.headers)) {
-              for (const [key, value] of init.headers) {
-                headers[key] = value
-              }
-            } else {
-              headers = init.headers as Record<string, string>
-            }
-          }
-
-          const response = await undiciFetch(url, {
-            method: init?.method || "GET",
-            headers,
-            body: init?.body as string | undefined,
-            dispatcher: insecureAgent,
-          })
-
-          return response as unknown as Response
-        }
-      : undefined
-
-    const provider = createOpenAICompatible({
-      name: "custom-openai",
-      apiKey,
-      baseURL: providerBaseUrl,
-      fetch: customFetch,
-    })
+## Supabase investment data mode
+${buildAnswerEvidence(results)}
+Answer only from verified rows. Do not substitute model knowledge or estimates
+for missing values.`
+    }
 
     let firstTokenMs: number | null = null
     let finishReason: string | undefined
@@ -139,16 +132,44 @@ export async function POST(req: Request) {
       | undefined
 
     const result = streamText({
-      model: provider(model),
-      messages: messagesWithSystem,
+      model: languageModel,
+      instructions,
+      messages: trimmedMessages,
       temperature: 0.7,
+      reasoning: "low",
       onFinish: (event) => {
         finishReason = event.finishReason
         usage = event.usage
       },
     })
 
-    const response = result.toTextStreamResponse()
+    const onStreamError = (streamError: unknown) =>
+      streamError instanceof Error
+        ? streamError.message
+        : "The model response stream failed"
+    const response = insightSpec
+      ? createUIMessageStreamResponse({
+          stream: result.toUIMessageStream({
+            originalMessages: messages as UIMessage[],
+            sendReasoning: true,
+            onError: onStreamError,
+          }).pipeThrough(new TransformStream<UIMessageChunk, UIMessageChunk>({
+            transform(chunk, controller) {
+              controller.enqueue(chunk)
+            },
+            flush(controller) {
+              controller.enqueue({
+                type: SPEC_DATA_PART_TYPE,
+                data: { type: "flat", spec: insightSpec },
+              } as UIMessageChunk)
+            },
+          })),
+        })
+      : result.toUIMessageStreamResponse({
+          originalMessages: messages as UIMessage[],
+          sendReasoning: true,
+          onError: onStreamError,
+        })
     if (!response.body) {
       return response
     }

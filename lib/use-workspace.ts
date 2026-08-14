@@ -22,8 +22,6 @@ import {
   linkTable,
   unlinkTable,
   isTableLinked,
-  getLinkedTables,
-  getLinkedTablePaths,
   getLinkedTablesWithNotes,
 } from "./db"
 
@@ -64,6 +62,7 @@ export function useActiveWorkspace() {
   const [isLoaded, setIsLoaded] = useState(false)
   
   // Load from localStorage on mount
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const stored = localStorage.getItem(ACTIVE_WORKSPACE_KEY)
     if (stored) {
@@ -71,6 +70,7 @@ export function useActiveWorkspace() {
     }
     setIsLoaded(true)
   }, [])
+  /* eslint-enable react-hooks/set-state-in-effect */
   
   // Get the active workspace details
   const activeWorkspace = useLiveQuery(

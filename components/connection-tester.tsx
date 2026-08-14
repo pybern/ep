@@ -7,12 +7,13 @@ import { JdbcTester } from "@/components/testers/jdbc-tester"
 import { OdbcTester } from "@/components/testers/odbc-tester"
 import { OpenAiTester } from "@/components/testers/openai-tester"
 import { AdfsTester } from "@/components/testers/adfs-tester"
+import { PostgresTester } from "@/components/testers/postgres-tester"
 import { TestHistory } from "@/components/test-history"
-import { Shield, Zap, Globe, Database, Server, Sparkles, KeyRound } from "lucide-react"
+import { Shield, Zap, Globe, Database, Server, Sparkles, KeyRound, Leaf } from "lucide-react"
 
 export type TestResult = {
   id: string
-  type: "api" | "jdbc" | "odbc" | "openai"
+  type: "api" | "jdbc" | "odbc" | "openai" | "postgres"
   connectionString: string
   status: "success" | "error" | "pending"
   message: string
@@ -108,6 +109,13 @@ export function ConnectionTester() {
                     <KeyRound className="h-4 w-4" />
                     ADFS
                   </TabsTrigger>
+                  <TabsTrigger
+                    value="postgres"
+                    className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground gap-2"
+                  >
+                    <Leaf className="h-4 w-4" />
+                    Postgres
+                  </TabsTrigger>
                 </TabsList>
               </div>
 
@@ -126,6 +134,9 @@ export function ConnectionTester() {
                 </TabsContent>
                 <TabsContent value="adfs" className="mt-0">
                   <AdfsTester onResult={addResult} />
+                </TabsContent>
+                <TabsContent value="postgres" className="mt-0">
+                  <PostgresTester onResult={addResult} />
                 </TabsContent>
               </div>
             </Tabs>

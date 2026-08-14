@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -21,7 +21,6 @@ export function AdfsTester({ onResult }: Props) {
   const [resource, setResource] = useState("")
   const [scope, setScope] = useState("openid")
   const [showSecret, setShowSecret] = useState(false)
-  const [generatedUrl, setGeneratedUrl] = useState("")
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [hasStoredCredentials, setHasStoredCredentials] = useState(false)
@@ -301,7 +300,8 @@ export function AdfsTester({ onResult }: Props) {
     onResult(successResult)
   }
 
-  const buildAuthorizationUrl = (): string => {
+  const generatedUrl = useMemo((): string => {
+    if (!serverUrl || !clientId || !redirectUri) return ""
     const baseUrl = serverUrl.trim().replace(/\/+$/, "")
     const params = new URLSearchParams({
       response_type: "code",
@@ -318,15 +318,6 @@ export function AdfsTester({ onResult }: Props) {
     }
     
     return `${baseUrl}/adfs/oauth2/authorize?${params.toString()}`
-  }
-
-  // Update generated URL when inputs change
-  useEffect(() => {
-    if (serverUrl && clientId && redirectUri) {
-      setGeneratedUrl(buildAuthorizationUrl())
-    } else {
-      setGeneratedUrl("")
-    }
   }, [serverUrl, clientId, redirectUri, scope, resource])
 
   const handleStartOAuthFlow = () => {
@@ -355,7 +346,8 @@ export function AdfsTester({ onResult }: Props) {
     saveADFSCredentials(credentials)
     
     // Redirect to ADFS
-    const authUrl = buildAuthorizationUrl()
+    const authUrl = generatedUrl
+    if (!authUrl) return
     console.log("[ADFS] Redirecting to:", authUrl)
     console.log("[ADFS] Credentials saved:", { ...credentials, clientSecret: "***" })
     window.location.href = authUrl

@@ -29,14 +29,11 @@ import {
   RefreshCw,
 } from "lucide-react"
 import { 
-  TableNote, 
-  ColumnNote, 
   upsertTableNote, 
   getTableNote, 
   deleteTableNote,
   upsertColumnNote,
   getColumnNotes,
-  deleteColumnNote,
   unlinkTable,
 } from "@/lib/db"
 import { cn } from "@/lib/utils"
@@ -101,12 +98,8 @@ export function TableNotesModal({
   const [isUnlinking, setIsUnlinking] = useState(false)
   
   // Column fetching state
-  const [fetchedColumns, setFetchedColumns] = useState<ColumnInfo[]>([])
   const [isLoadingColumns, setIsLoadingColumns] = useState(false)
   const [columnsError, setColumnsError] = useState<string | null>(null)
-  
-  // Use provided columns or fetched columns
-  const columns = providedColumns && providedColumns.length > 0 ? providedColumns : fetchedColumns
   
   // Table note state
   const [tableNoteId, setTableNoteId] = useState<string | null>(null)
@@ -149,7 +142,6 @@ export function TableNotesModal({
           name: field.name,
           type: formatColumnType(field.type),
         }))
-        setFetchedColumns(cols)
         return cols
       } else {
         setColumnsError("No columns found for this table")
@@ -164,18 +156,10 @@ export function TableNotesModal({
     }
   }, [dremioCredentials, tablePath])
 
-  // Load existing notes and fetch columns if needed when modal opens
-  useEffect(() => {
-    if (open && workspaceId && tablePath) {
-      loadNotes()
-    }
-  }, [open, workspaceId, tablePath])
-
-  const loadNotes = async () => {
+  const loadNotes = useCallback(async () => {
     if (!workspaceId) return
     
     setIsLoading(true)
-    setFetchedColumns([])
     setColumnsError(null)
     
     try {
@@ -235,7 +219,20 @@ export function TableNotesModal({
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [
+    dremioCredentials,
+    fetchColumnsFromDremio,
+    providedColumns,
+    tablePath,
+    workspaceId,
+  ])
+
+  // Load existing notes and fetch columns if needed when modal opens
+  useEffect(() => {
+    if (open && workspaceId && tablePath) {
+      void loadNotes()
+    }
+  }, [loadNotes, open, tablePath, workspaceId])
 
   const handleAddTag = useCallback(() => {
     const tag = newTag.trim().toLowerCase()
@@ -318,8 +315,6 @@ export function TableNotesModal({
       handleSave()
     }
   }
-
-  const tableName = tablePath.split(".").pop() || tablePath
 
   // Count columns with notes
   const columnsWithNotes = columnNotes.filter(cn => cn.description.trim()).length

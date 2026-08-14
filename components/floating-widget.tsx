@@ -8,16 +8,16 @@ import { JdbcTester } from "@/components/testers/jdbc-tester"
 import { OdbcTester } from "@/components/testers/odbc-tester"
 import { OpenAiTester } from "@/components/testers/openai-tester"
 import { AdfsTester } from "@/components/testers/adfs-tester"
+import { PostgresTester } from "@/components/testers/postgres-tester"
 import { TestHistory } from "@/components/test-history"
-import { CredentialSettings } from "@/components/credential-settings"
-import { OpenAICredentialSettings } from "@/components/openai-credential-settings"
-import { Shield, Zap, Globe, Database, Server, Sparkles, X, ChevronDown, ChevronUp, Settings, KeyRound } from "lucide-react"
+import { Shield, Zap, Globe, Database, Server, Sparkles, X, ChevronDown, ChevronUp, Settings, KeyRound, Leaf } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { DremioCredentials } from "@/lib/credential-store"
+import Link from "next/link"
+import type { DremioCredentials } from "@/lib/credential-store"
 
 export type TestResult = {
   id: string
-  type: "api" | "jdbc" | "odbc" | "openai"
+  type: "api" | "jdbc" | "odbc" | "openai" | "postgres"
   connectionString: string
   status: "success" | "error" | "pending"
   message: string
@@ -28,8 +28,13 @@ export type TestResult = {
 
 interface FloatingWidgetProps {
   defaultOpen?: boolean
+  /**
+   * Back-compat callback. Credentials management lives in /settings now, but
+   * callers (e.g. the workbench) may still want to be notified when the user
+   * clears credentials from another tab. Kept so existing wiring doesn't
+   * break; currently only used for type compatibility.
+   */
   onCredentialsChange?: (credentials: DremioCredentials | null) => void
-  openSettingsRef?: React.MutableRefObject<(() => void) | null>
 }
 
 const BUTTON_SIZE = 44
@@ -37,26 +42,14 @@ const MARGIN = 12
 
 type Corner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
 
-export function FloatingWidget({ defaultOpen = false, onCredentialsChange, openSettingsRef }: FloatingWidgetProps) {
+export function FloatingWidget({ defaultOpen = false }: FloatingWidgetProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen)
   const [history, setHistory] = useState<TestResult[]>([])
   const [showHistory, setShowHistory] = useState(false)
-  const [activeTab, setActiveTab] = useState("credentials")
-
-  // Expose openSettings function via ref
-  useEffect(() => {
-    if (openSettingsRef) {
-      openSettingsRef.current = () => {
-        setIsOpen(true)
-        setActiveTab("credentials")
-      }
-    }
-    return () => {
-      if (openSettingsRef) {
-        openSettingsRef.current = null
-      }
-    }
-  }, [openSettingsRef])
+  const [activeTab, setActiveTab] = useState("api")
+  // Preserve the onCredentialsChange prop for back-compat without wiring it
+  // to any internal UI (the /settings page is the canonical path now).
+  void (undefined as unknown as FloatingWidgetProps["onCredentialsChange"])
   const [position, setPosition] = useState({ x: 0, y: 0 })
   const [isDragging, setIsDragging] = useState(false)
   const [isSnapping, setIsSnapping] = useState(false)
@@ -239,11 +232,19 @@ export function FloatingWidget({ defaultOpen = false, onCredentialsChange, openS
                   <Zap className="h-4 w-4 text-primary" />
                 </div>
                 <div>
-                  <h2 className="text-sm font-medium text-foreground">Connection Tester</h2>
-                  <p className="text-[10px] text-muted-foreground">Test API, JDBC, ODBC & OpenAI</p>
+                  <h2 className="text-sm font-medium text-foreground">Quick Connection Tester</h2>
+                  <p className="text-[10px] text-muted-foreground">Ad-hoc probes — credentials live in Settings</p>
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                <Link
+                  href="/settings"
+                  onClick={() => setIsOpen(false)}
+                  className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-border/60 bg-accent/40 text-foreground hover:bg-accent transition-colors"
+                >
+                  <Settings className="h-3 w-3" />
+                  Settings
+                </Link>
                 <div className="flex items-center gap-2 text-[10px] text-muted-foreground mr-2">
                   <Shield className="h-3 w-3 text-primary/70" />
                   <span>Secure</span>
@@ -261,13 +262,6 @@ export function FloatingWidget({ defaultOpen = false, onCredentialsChange, openS
             <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col min-h-0 overflow-hidden">
               <div className="border-b border-border/50 px-3 shrink-0">
                 <TabsList className="h-9 bg-transparent gap-1">
-                  <TabsTrigger
-                    value="credentials"
-                    className="text-xs data-[state=active]:bg-accent/80 data-[state=active]:text-accent-foreground gap-1.5 px-2.5 h-7"
-                  >
-                    <Settings className="h-3 w-3" />
-                    Credentials
-                  </TabsTrigger>
                   <TabsTrigger
                     value="api"
                     className="text-xs data-[state=active]:bg-accent/80 data-[state=active]:text-accent-foreground gap-1.5 px-2.5 h-7"
@@ -303,15 +297,18 @@ export function FloatingWidget({ defaultOpen = false, onCredentialsChange, openS
                     <KeyRound className="h-3 w-3" />
                     ADFS
                   </TabsTrigger>
+                  <TabsTrigger
+                    value="postgres"
+                    className="text-xs data-[state=active]:bg-accent/80 data-[state=active]:text-accent-foreground gap-1.5 px-2.5 h-7"
+                  >
+                    <Leaf className="h-3 w-3" />
+                    Postgres
+                  </TabsTrigger>
                 </TabsList>
               </div>
 
               <div className="flex-1 overflow-y-auto scrollbar-subtle">
                 <div className="p-4">
-                  <TabsContent value="credentials" className="mt-0 space-y-6">
-                    <CredentialSettings onCredentialsChange={onCredentialsChange} />
-                    <OpenAICredentialSettings />
-                  </TabsContent>
                   <TabsContent value="api" className="mt-0">
                     <ApiTester onResult={addResult} />
                   </TabsContent>
@@ -326,6 +323,9 @@ export function FloatingWidget({ defaultOpen = false, onCredentialsChange, openS
                   </TabsContent>
                   <TabsContent value="adfs" className="mt-0">
                     <AdfsTester onResult={addResult} />
+                  </TabsContent>
+                  <TabsContent value="postgres" className="mt-0">
+                    <PostgresTester onResult={addResult} />
                   </TabsContent>
                 </div>
               </div>
