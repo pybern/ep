@@ -45,6 +45,10 @@ the previous error details. Charts, KPI cards,
 findings, underlying data, sources and material data limitations remain
 available. Configuration keeps its administrator diagnostics.
 
+## Architecture
+
+See [Architecture and Agentic Workflow](docs/ARCHITECTURE.md) for the current system map, security sweep, target agent runtime, and prioritized improvement plan.
+
 ## Features
 
 - **Seven use cases** with a persona, a scenario and curated questions:
