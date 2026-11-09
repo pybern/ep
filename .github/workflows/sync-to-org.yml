@@ -48,7 +48,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch ../source HEAD
+          git fetch --update-shallow ../source HEAD
           git read-tree --reset -u FETCH_HEAD
           if git diff --cached --quiet; then
             echo "Organization repository already matches the source."
