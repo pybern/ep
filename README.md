@@ -839,6 +839,31 @@ npm run build
 
 Built with Next.js 16 (App Router, Cache Components), React 19, Tailwind CSS v4, Recharts and lucide-react.
 
+## Docker deployment and publishing
+
+Build with `docker build -t insightful .` and run with
+`docker run --rm -p 3000:3000 --env-file .env.local -v insightful-config:/app/.local insightful`.
+The image uses Next.js standalone output and runs as a non-root user. Local
+environment files and saved connections are excluded from the build context;
+provide credentials only at runtime. The volume preserves saved configuration
+across container replacements. Environment-managed connections need no saved
+configuration.
+
+On `pybern/ep`, pushes to `main` run `.github/workflows/sync-to-org.yml`.
+The workflow replaces the files in `nggdim/ep` with the source tree, committing
+on top of the organization's existing history without force-pushing. It requires
+the `ORG_REPO_PAT` repository secret with permission to push repository contents
+and workflow files to `nggdim/ep`. A PAT is used so the resulting push triggers
+the organization's GitHub Actions workflows.
+
+On `nggdim/ep`, `.github/workflows/docker-build-push.yml` builds and publishes
+the `linux/amd64` and `linux/arm64` images to Docker Hub as
+`DOCKER_USERNAME/ep`, including `main`, commit-SHA and `latest` tags. It uses
+the existing Blacksmith runner and requires `DOCKER_USERNAME` and `DOCKER_TOKEN`
+repository secrets. Both workflows also support manual dispatch. The workflows
+are repository-scoped and do not sync or publish from `pybern/teetooai`.
+Publishing an image does not itself roll out or configure a running deployment.
+
 ## Layout
 
 ```
