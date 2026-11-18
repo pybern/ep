@@ -3,13 +3,14 @@
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
 import { AdminTokenGenerator } from "./admin-token-generator";
 import { ModelChat } from "./model-chat";
+import { ModelRequestBuilder } from "./model-request-builder";
 import { DatabaseInitializer } from "./database-initializer";
 import { sendModelChat } from "@/lib/model-chat-stream";
 import {
   DEFAULT_CONNECTIONS, isVercelAiGateway, type ApiSettings, type DatabaseSettings,
   type PublicConnections, type ConnectionTestResult,
   type DatabaseInitializationResult,
-  modelReasoningEfforts, isReasoningEffort, type ModelCatalog,
+  modelReasoningEfforts, isReasoningEffort, REASONING_EFFORTS, type ModelCatalog, type ReasoningEffort,
   DEFAULT_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, OUTPUT_TOKEN_STEPS, type OutputTokenStep,
 } from "@/lib/connections";
 
@@ -86,7 +87,8 @@ export function ConnectionSettings() {
   const [dirty, setDirty] = useState({ api: false, database: false });
   const [models, setModels] = useState<string[]>([]);
   const [reasoningEfforts, setReasoningEfforts] = useState<ModelCatalog["reasoningEfforts"]>({});
-  const availableEfforts = modelReasoningEfforts({ models, reasoningEfforts }, api.model);
+  const manual = api.useModelCatalog === false;
+  const availableEfforts: readonly ReasoningEffort[] = manual ? REASONING_EFFORTS : modelReasoningEfforts({ models, reasoningEfforts }, api.model);
   const [modelError, setModelError] = useState("");
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelRefresh, setModelRefresh] = useState(0);
@@ -98,14 +100,14 @@ export function ConnectionSettings() {
   const [databaseRevision, setDatabaseRevision] = useState(0);
 
   useEffect(() => {
-    if (!unlocked) return;
+    if (!unlocked || manual) return;
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       setModelsLoading(true);
       setModelError("");
       try {
         const result = await request<ModelCatalog>(token, "/api/config/models", "POST", {
-          settings: { baseUrl: api.baseUrl, apiKey: api.apiKey },
+          settings: { baseUrl: api.baseUrl, apiKey: api.apiKey, verifySsl: api.verifySsl, caCertificate: api.caCertificate, trustEnv: api.trustEnv },
         }, controller.signal);
         if (!controller.signal.aborted) {
           setModels(result.models);
@@ -120,7 +122,7 @@ export function ConnectionSettings() {
       }
     }, 350);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [unlocked, token, api.baseUrl, api.apiKey, modelRefresh]);
+  }, [unlocked, token, api.baseUrl, api.apiKey, api.verifySsl, api.caCertificate, api.trustEnv, manual, modelRefresh]);
 
   function updateApi(change: Partial<ApiSettings>) {
     setApi((current) => ({
@@ -130,7 +132,8 @@ export function ConnectionSettings() {
     }));
     setNotices((current) => ({ ...current, api: undefined }));
     setDirty((current) => ({ ...current, api: true }));
-    if ("baseUrl" in change || "apiKey" in change) {
+    if ("baseUrl" in change || "apiKey" in change || "verifySsl" in change || "caCertificate" in change || "trustEnv" in change || "useModelCatalog" in change) {
+      setModelsLoading(false);
       setModels([]);
       setReasoningEfforts({});
       setModelError("");
@@ -148,13 +151,14 @@ export function ConnectionSettings() {
     setUnlockError("");
     try {
       const saved = await request<PublicConnections>(token, "/api/config", "GET");
-      setApi({ baseUrl: saved.api.baseUrl, model: saved.api.model, reasoningEffort: saved.api.reasoningEffort, outputTokens: saved.api.outputTokens, apiKey: undefined });
+      const { hasApiKey, environmentApiKeyAvailable, ...apiSettings } = saved.api;
+      setApi(apiSettings);
       setSavedApi({ baseUrl: saved.api.baseUrl, model: saved.api.model });
       const { hasPassword: storedPassword, ...db } = saved.database;
       setDatabase({ ...db, password: undefined });
       setSavedDatabase({ host: db.host, port: db.port, database: db.database });
-      setHasKey(saved.api.hasApiKey);
-      setEnvironmentKeyAvailable(saved.api.environmentApiKeyAvailable ?? false);
+      setHasKey(hasApiKey);
+      setEnvironmentKeyAvailable(environmentApiKeyAvailable ?? false);
       setHasPassword(storedPassword);
       setDirty({ api: false, database: false });
       setNotices({});
@@ -174,13 +178,15 @@ export function ConnectionSettings() {
         setNotices((current) => ({ ...current, [kind]: result }));
       } else {
         const result = await request<PublicConnections>(token, "/api/config", "PUT", body);
-        setEnvironmentKeyAvailable(result.api.environmentApiKeyAvailable ?? false);
         if (kind === "api") {
-          setHasKey(result.api.hasApiKey);
-          setApi({ baseUrl: result.api.baseUrl, model: result.api.model, reasoningEffort: result.api.reasoningEffort, outputTokens: result.api.outputTokens, apiKey: undefined });
+          const { hasApiKey, environmentApiKeyAvailable, ...apiSettings } = result.api;
+          setHasKey(hasApiKey);
+          setEnvironmentKeyAvailable(environmentApiKeyAvailable ?? false);
+          setApi(apiSettings);
           setSavedApi({ baseUrl: result.api.baseUrl, model: result.api.model });
           setChatRevision((current) => current + 1);
         } else {
+          setEnvironmentKeyAvailable(result.api.environmentApiKeyAvailable ?? false);
           const { hasPassword: storedPassword, ...db } = result.database;
           setHasPassword(storedPassword);
           setDatabase({ ...db, password: undefined });
@@ -279,12 +285,15 @@ export function ConnectionSettings() {
             </div>
             <div className="min-w-0 space-y-4 sm:col-span-2">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className="text-sm text-slate-300">Provider model catalog</p>
-                <button type="button" className={buttonClass} disabled={modelsLoading} onClick={() => setModelRefresh((current) => current + 1)}>
+                <label className="flex items-center gap-3 text-sm text-slate-300">
+                  <input type="checkbox" checked={!manual} onChange={(e) => updateApi({ useModelCatalog: e.target.checked })} />
+                  Use provider model catalog
+                </label>
+                {!manual && <button type="button" className={buttonClass} disabled={modelsLoading} onClick={() => setModelRefresh((current) => current + 1)}>
                   {modelsLoading ? "Loading models..." : models.length ? "Refresh models" : "Load models"}
-                </button>
+                </button>}
               </div>
-              <Field label="Model" hint="Type to search, select a suggestion, or enter a custom model ID. Clear the field to browse all models. Qwen is listed under alibaba on Vercel.">
+              <Field label="Model" hint={manual ? "Enter the exact model ID supplied by the provider." : "Type to search, select a suggestion, or enter a custom model ID. Clear the field to browse all models. Qwen is listed under alibaba on Vercel."}>
                 <input
                   aria-label="Model"
                   className={inputClass}
@@ -346,7 +355,7 @@ export function ConnectionSettings() {
                 </div>
               </fieldset>
               <div aria-live="polite" className="text-xs leading-relaxed text-slate-500">
-                {modelError ? <p role="alert" className="text-rose-300">{modelError}</p> : modelsLoading ? "Fetching the provider's live catalog..." : models.length ? (
+                {manual ? "Discovery is off. Chats send the selected model and thinking effort without checking /models. Choose an effort your endpoint supports." : modelError ? <p role="alert" className="text-rose-300">{modelError}</p> : modelsLoading ? "Fetching the provider's live catalog..." : models.length ? (
                   <p>{models.length} models available. All catalog models are included; image, audio or embedding models may not support the chat connection test.</p>
                 ) : "Models load automatically using the current base URL and API key. No selected model or save is required."}
               </div>
@@ -358,12 +367,30 @@ export function ConnectionSettings() {
               <button type="button" className="mt-2 text-xs text-slate-400 underline hover:text-white" onClick={() => updateApi({ apiKey: "" })}>Remove key on save</button>
               {api.apiKey === "" && !usesEnvironmentKey && <p className="mt-1 text-xs text-amber-400">The current form has no API key.</p>}
             </div>
+            <div className="sm:col-span-2">
+              <label className="flex items-center gap-3 text-sm text-slate-300">
+                <input aria-label="Verify API SSL certificate" type="checkbox" checked={api.verifySsl === true} onChange={(event) => updateApi({ verifySsl: event.target.checked, ...(event.target.checked ? {} : { caCertificate: "" }) })} className="size-4 accent-sky-500" />
+                Verify API SSL/TLS certificate (recommended)
+              </label>
+              {api.verifySsl !== true && <p className="mt-2 text-xs text-amber-400">Certificate verification is disabled for this model endpoint. HTTPS remains encrypted, but the server identity is not verified.</p>}
+            </div>
+            <label className="flex items-center gap-3 text-sm text-slate-300 sm:col-span-2">
+              <input type="checkbox" checked={api.trustEnv === true} onChange={(e) => updateApi({ trustEnv: e.target.checked })} />
+              Use server proxy environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY)
+            </label>
+            {api.verifySsl === true && <div className="sm:col-span-2">
+              <Field label="API CA certificate (optional)" hint="PEM format. Leave blank to use the system trust store. Applies to HTTPS model calls and catalog loading.">
+                <textarea aria-label="API CA certificate" className={`${inputClass} font-mono text-xs`} rows={4} value={api.caCertificate ?? ""} onChange={(event) => updateApi({ caCertificate: event.target.value })} placeholder="-----BEGIN CERTIFICATE-----" />
+              </Field>
+            </div>}
           </div>
           <p className="mt-5 text-xs text-slate-500">The test may incur a small provider charge. Uses POST /chat/completions with a 15-second timeout.</p>
           {buttons("api")}
           <Feedback notice={notices.api} />
         </fieldset>
       </form>
+
+      <ModelRequestBuilder token={token} settings={api} disabled={!!busy} />
 
       <ModelChat
         key={`chat-${chatRevision}`}

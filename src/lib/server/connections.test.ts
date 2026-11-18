@@ -26,12 +26,14 @@ vi.mock("pg", () => ({
 import {
   authorizeConfiguration, listApiModels, listApiModelCatalog, loadConnections, parseApi, parseApiEndpoint, parseDatabase,
   loadSavedApi, loadSavedDatabase, loadBootstrapConnections, publicConnections, saveConnection, testApi, testDatabase,
-  configurationError,
+  configurationError, parseModelTestRequest,
 } from "./connections";
 import { GET, PUT } from "@/app/api/config/route";
 import { POST } from "@/app/api/config/test/route";
 import { POST as MODELS } from "@/app/api/config/models/route";
 import { POST as CHAT } from "@/app/api/config/chat/route";
+import { POST as MODEL_REQUEST } from "@/app/api/config/request/route";
+import { MAX_TEST_IMAGE_BYTES } from "@/lib/model-tester";
 
 const adminToken = "test-administrator-token-with-32-characters";
 const api = { baseUrl: "https://api.example.test/v1", model: "test-model", apiKey: "secret-api-key" };
@@ -91,7 +93,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   for (const key of ["LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "LLM_REASONING_EFFORT",
-    "LLM_PLANNING_OUTPUT_TOKENS", "LLM_CHART_OUTPUT_TOKENS", "LLM_EXPLANATION_OUTPUT_TOKENS",
+    "LLM_PLANNING_OUTPUT_TOKENS", "LLM_CHART_OUTPUT_TOKENS", "LLM_EXPLANATION_OUTPUT_TOKENS", "LLM_VERIFY_SSL", "LLM_CA_CERTIFICATE",
     "DB_HOST", "DB_PORT", "DB_DATABASE", "DB_USERNAME", "DB_PASSWORD", "DB_SSL", "DB_CA_CERTIFICATE"]) {
     vi.stubEnv(key, "");
   }
@@ -152,6 +154,43 @@ describe("configuration access and validation", () => {
     expect(() => parseApi({ ...api, baseUrl: "http://api.example.test" })).toThrow("HTTPS");
     expect(() => parseApi({ ...api, apiKey: "key\nheader" })).toThrow("line breaks");
     expect(parseApi({ ...api, baseUrl: "http://localhost:8080/v1" })).toMatchObject({ model: "test-model" });
+  });
+  it("validates and persists endpoint-specific SSL configuration", async () => {
+    expect(parseApi(api)).toEqual(api);
+    for (const verifySsl of [null, 0, "false"]) {
+      expect(() => parseApi({ ...api, verifySsl })).toThrow("verification");
+    }
+    expect(() => parseApi({ ...api, caCertificate: "invalid" })).toThrow("PEM");
+    const caCertificate = "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----";
+    expect(() => parseApi({ ...api, caCertificate })).toThrow("verification");
+    expect(() => parseApi({ ...api, verifySsl: false, caCertificate })).toThrow("verification");
+    expect(() => parseApi({ ...api, baseUrl: "http://localhost/v1", caCertificate })).toThrow("HTTPS");
+    await saveConnection("api", { ...api, verifySsl: false });
+    expect((await loadSavedApi()).verifySsl).toBe(false);
+    await saveConnection("api", { ...api, verifySsl: true, caCertificate });
+    expect((await loadSavedApi()).caCertificate).toBe(caCertificate);
+  });
+  it("loads API SSL environment settings and rejects malformed verification values", async () => {
+    vi.stubEnv("LLM_BASE_URL", api.baseUrl);
+    vi.stubEnv("LLM_MODEL", api.model);
+    vi.stubEnv("LLM_VERIFY_SSL", "false");
+    expect((await loadSavedApi()).verifySsl).toBe(false);
+    vi.stubEnv("LLM_VERIFY_SSL", "yes");
+    await expect(loadSavedApi()).rejects.toThrow("LLM_VERIFY_SSL");
+  });
+  it("validates tester controls and bounded base64 images without allowing remote image fetches", () => {
+    const request = { prompt: "Hello", maxTokens: 512, stream: false, mode: "chat" };
+    expect(parseModelTestRequest(request)).toEqual(request);
+    expect(parseModelTestRequest({ ...request, prompt: "", image: "data:image/png;base64,aGVsbG8=" }).prompt).toBe("");
+    for (const change of [
+      { prompt: "" }, { maxTokens: 0 }, { maxTokens: 32769 }, { maxTokens: 1.5 }, { stream: "false" },
+      { mode: "unknown" }, { temperature: 2.1 }, { extra: "unsupported" },
+      { image: "https://private.test/image.png" }, { image: "data:image/;base64," },
+      { image: "data:image/svg+xml;base64,aGVsbG8=" }, { image: "data:image/png;base64,abc" },
+      { image: `data:image/png;base64,${Buffer.alloc(MAX_TEST_IMAGE_BYTES + 1).toString("base64")}` },
+    ]) expect(() => parseModelTestRequest({ ...request, ...change })).toThrow();
+    const atLimit = `data:image/png;base64,${Buffer.alloc(MAX_TEST_IMAGE_BYTES).toString("base64")}`;
+    expect(parseModelTestRequest({ ...request, image: atLimit }).image).toBe(atLimit);
   });
   it("validates thinking effort and preserves provider-default compatibility", () => {
     for (const reasoningEffort of ["none", "minimal", "low", "medium", "high", "xhigh", "max"]) {
@@ -801,6 +840,72 @@ describe("configuration routes", () => {
     function event(delta: Record<string, string>, finish = false) {
       return `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finish ? "stop" : null }] })}\n\n${finish ? "data: [DONE]\n\n" : ""}`;
     }
+    it.each([false, true])("builds image requests with current unsaved settings and stream=%s", async (stream) => {
+      const request = {
+        prompt: "", systemPrompt: "Describe the supplied image.", image: "data:image/png;base64,aGVsbG8=",
+        maxTokens: 512, stream, mode: "chat", temperature: 0.3,
+      };
+      providerBody = JSON.stringify({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "An image." } }] });
+      const result = await readReply(await MODEL_REQUEST(configRequest("POST", {
+        settings: { ...api, baseUrl, apiKey: "", model: "Qwen3.6-35B-A3B-AWQ", verifySsl: false }, request,
+      })));
+      expect(result).toMatchObject({ completed: true, model: "Qwen3.6-35B-A3B-AWQ", message: { content: "An image." } });
+      expect(received.authorization).toBeUndefined();
+      expect(received.body).toMatchObject({
+        model: "Qwen3.6-35B-A3B-AWQ", max_tokens: 512, temperature: 0.3,
+        messages: [
+          { role: "system", content: "Describe the supplied image." },
+          { role: "user", content: [
+            { type: "text", text: "" },
+            { type: "image_url", image_url: { url: request.image } },
+          ] },
+        ],
+      });
+      expect(received.body?.stream).toBe(stream);
+      expect(received.body).not.toHaveProperty("response_format");
+      await expect(loadSavedApi()).rejects.toThrow("Save your API settings");
+    });
+    it.each([false, true])("omits all image content from text-only requests with stream=%s", async (stream) => {
+      providerBody = JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: "Text-only reply." } }] });
+      await readReply(await MODEL_REQUEST(configRequest("POST", {
+        settings: { ...api, baseUrl },
+        request: { prompt: "Hello.", maxTokens: 512, stream, mode: "chat" },
+      })));
+      expect(received.body?.messages).toEqual([{ role: "user", content: "Hello." }]);
+      expect(JSON.stringify(received.body)).not.toContain("image");
+    });
+    it.each([false, true])("requires schema-valid output in strict tester mode with stream=%s", async (stream) => {
+      const body = {
+        settings: { ...api, baseUrl },
+        request: { prompt: 'Return {"ok":true,"feedback":"Confirmed"}.', maxTokens: 512, stream, mode: "json" },
+      };
+      providerBody = JSON.stringify(probeCompletion());
+      expect(await readReply(await MODEL_REQUEST(configRequest("POST", body)))).toMatchObject({ completed: true });
+      expect(received.body?.response_format).toMatchObject({
+        type: "json_schema", json_schema: { strict: true, name: "researchConnectionProbe" },
+      });
+      providerBody = JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: '{"ok":false,"feedback":"bad"}' } }] });
+      await expect(readReply(await MODEL_REQUEST(configRequest("POST", body)))).rejects.toThrow(/schema|output|response/i);
+    });
+    it("protects the builder, validates inputs and reports output truncation", async () => {
+      const body = {
+        settings: { ...api, baseUrl },
+        request: { prompt: "Hello", maxTokens: 512, stream: false, mode: "chat" },
+      };
+      expect((await MODEL_REQUEST(configRequest("POST", body, "wrong"))).status).toBe(401);
+      expect((await MODEL_REQUEST(configRequest("POST", { ...body, request: { ...body.request, maxTokens: 0 } }))).status).toBe(400);
+      providerBody = JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "Truncated" } }] });
+      await expect(readReply(await MODEL_REQUEST(configRequest("POST", body)))).rejects.toThrow("output-token limit");
+    });
+    it("does not mark filtered output as a completed schema test", async () => {
+      const completion = probeCompletion();
+      completion.choices[0].finish_reason = "content_filter";
+      providerBody = JSON.stringify(completion);
+      await expect(readReply(await MODEL_REQUEST(configRequest("POST", {
+        settings: { ...api, baseUrl },
+        request: { prompt: "Confirm the schema.", maxTokens: 512, stream: false, mode: "json" },
+      })))).rejects.toThrow("did not finish normally");
+    });
     it("sends saved thinking effort through the SDK as reasoning_effort, ignoring unsaved overrides", async () => {
       await saveConnection("api", { ...api, reasoningEffort: "max" });
       const fetchSpy = vi.spyOn(globalThis, "fetch")

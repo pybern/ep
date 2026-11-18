@@ -1,6 +1,8 @@
 import { DefaultChatTransport, readUIMessageStream, type UIMessage } from "ai";
 import type { ModelChatMessage, ModelChatMetadata, ModelChatResult, ModelChatToolActivity } from "./connections";
 import { HKEX_CLIENT_TIMEOUT_MS } from "./connections";
+import type { ApiSettings } from "./connections";
+import type { ModelTestRequest } from "./model-tester";
 
 type ChatUIMessage = UIMessage<ModelChatMetadata, { tool: ModelChatToolActivity }>;
 
@@ -17,13 +19,15 @@ export function researchErrorMessage(error: unknown): string {
 export async function sendModelChat(
   token: string | undefined, messages: ModelChatMessage[], signal: AbortSignal, onText: (text: string) => void,
   onReasoning?: (reasoning: string) => void,
-  options?: { api: "/api/hkex/chat"; onTools?: (tools: ModelChatToolActivity[]) => void; explanationId?: string; useCaseId?: string },
+  options?: { api: "/api/hkex/chat"; onTools?: (tools: ModelChatToolActivity[]) => void; explanationId?: string; useCaseId?: string } |
+    { api: "/api/config/request"; settings: ApiSettings; request: ModelTestRequest },
 ): Promise<ModelChatResult> {
   const transport = new DefaultChatTransport<ChatUIMessage>({
     api: options?.api ?? "/api/config/chat",
-    headers: !options && token ? { Authorization: `Bearer ${token}` } : {},
+    headers: options?.api !== "/api/hkex/chat" && token ? { Authorization: `Bearer ${token}` } : {},
     prepareSendMessagesRequest: () => ({
-      body: options?.explanationId ? { explanationId: options.explanationId } : { messages, ...(options?.useCaseId ? { useCaseId: options.useCaseId } : {}) },
+      body: options?.api === "/api/config/request" ? { settings: options.settings, request: options.request } :
+        options?.explanationId ? { explanationId: options.explanationId } : { messages, ...(options?.useCaseId ? { useCaseId: options.useCaseId } : {}) },
     }),
     fetch: async (url, init) => {
       const response = await fetch(url, { ...init, cache: "no-store" });
@@ -54,7 +58,7 @@ export async function sendModelChat(
     tools = message.parts.filter((part) => part.type === "data-tool").map((part) => part.data);
     onText(text);
     onReasoning?.(reasoning);
-    options?.onTools?.(tools);
+    if (options?.api === "/api/hkex/chat") options.onTools?.(tools);
   }
   if (!metadata?.completed || !text.trim()) throw new Error("Model stream ended without a completed assistant reply. Your message can be retried.");
   return {

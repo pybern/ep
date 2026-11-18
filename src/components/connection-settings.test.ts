@@ -76,6 +76,35 @@ afterEach(async () => {
 });
 
 describe("automatic model dropdown loading", () => {
+  it("restores manual discovery without requesting models and saves manual effort and proxy settings", async () => {
+    fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({
+      api: { ...DEFAULT_CONNECTIONS.api, useModelCatalog: false, trustEnv: true, hasApiKey: false },
+      database: { ...DEFAULT_CONNECTIONS.database, hasPassword: false },
+    }) }));
+    await unlock();
+    await edit('input[aria-label="Model"]', "manual-model");
+    await chooseEffort("high");
+    await loadCatalog();
+    expect(catalogRequests).toHaveLength(0);
+    await act(async () => {
+      container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    const save = fetchMock.mock.calls.find(([, init]) => init.method === "PUT");
+    expect(JSON.parse(save![1].body).settings).toMatchObject({ model: "manual-model", reasoningEffort: "high", useModelCatalog: false, trustEnv: true });
+  });
+  it("applies API SSL changes to catalog loading and keeps verification distinct from database TLS", async () => {
+    await unlock();
+    const verification = container.querySelector<HTMLInputElement>('[aria-label="Verify API SSL certificate"]')!;
+    expect(verification.checked).toBe(false);
+    expect(container.querySelector('[aria-label="API CA certificate"]')).toBeNull();
+    expect(container.textContent).toContain("server identity is not verified");
+    await act(async () => { verification.click(); });
+    await loadCatalog();
+    expect(catalogRequests.at(-1)?.settings).toMatchObject({ verifySsl: true });
+    expect(container.querySelector('[aria-label="API CA certificate"]')).not.toBeNull();
+    const databaseTls = [...container.querySelectorAll("label")].find((label) => label.textContent?.includes("Require TLS with certificate verification"));
+    expect(databaseTls?.querySelector("input")?.checked).toBe(true);
+  });
   it("shows only catalog-advertised effort levels and resets when model or endpoint changes", async () => {
     await unlock();
     expect(container.querySelector('select[aria-label="Thinking effort"]')).toBeNull();

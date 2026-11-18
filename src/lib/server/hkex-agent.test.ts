@@ -148,6 +148,14 @@ describe("single-call HKEX research", () => {
     expect(calls[0].reasoning_effort).toBe("low");
     expect((await loadConnections()).api.reasoningEffort).toBe(effort);
   });
+  it.each(["hk", "hkex-db"])("inherits the manual provider and effort without discovery for %s", async (useCaseId) => {
+    await saveSettings();
+    await saveConnection("api", { baseUrl, model: "manual-model", reasoningEffort: "high", useModelCatalog: false, trustEnv: false });
+    const fetches = interceptChat();
+    await research(vi.fn(), useCaseId);
+    expect(fetches.mock.calls.some(([url]) => String(url).endsWith("/models"))).toBe(false);
+    expect(calls[0]).toMatchObject({ model: "manual-model", reasoning_effort: "high" });
+  });
   it.each(["none", "minimal"] as const)("does not increase a saved %s effort", async (effort) => {
     await saveSettings(effort); interceptChat();
     await research();

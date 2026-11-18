@@ -25,7 +25,8 @@ export function outputTokenLimit(settings: { outputTokens?: OutputTokenLimits },
   const value = settings.outputTokens?.[step];
   return isOutputTokenLimit(value) ? value : DEFAULT_OUTPUT_TOKENS[step];
 }
-export type ApiSettings = { baseUrl: string; model: string; apiKey?: string; reasoningEffort?: ReasoningEffort; outputTokens?: OutputTokenLimits };
+export type ApiEndpointSettings = { baseUrl: string; apiKey?: string; verifySsl?: boolean; caCertificate?: string; trustEnv?: boolean };
+export type ApiSettings = ApiEndpointSettings & { model: string; useModelCatalog?: boolean; reasoningEffort?: ReasoningEffort; outputTokens?: OutputTokenLimits };
 export type DatabaseSettings = {
   host: string;
   port: number;

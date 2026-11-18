@@ -118,7 +118,8 @@ unlock. Configuring connections alone does not import data or trigger model call
 
 Known values are prefilled for a new setup: the Vercel AI Gateway base URL
 (`https://ai-gateway.vercel.sh/v1`), a starter model (`openai/gpt-4.1-mini`),
-PostgreSQL port `5432`, and verified TLS. Saved settings always take precedence.
+PostgreSQL port `5432`, and verified PostgreSQL TLS. API certificate verification
+is off by default. Saved settings always take precedence.
 The starter model is an editable suggestion, not a verified connection.
 Unknown database host, database name, username and credentials remain blank.
 
@@ -165,13 +166,53 @@ to private IPs reachable by the server.
   be entered manually if an endpoint does not support listing. Catalog errors
   are shown explicitly; loading a list does not test model access.
   Image, audio and embedding models remain selectable but may not support chat.
+  **Verify API SSL/TLS certificate** is disabled by default, including for saved
+  API settings without an explicit verification value. An explicit saved `true`
+  remains enabled. Enable verification to authenticate the server; supply an optional
+  PEM **API CA certificate** for an internal certificate authority, or disable
+  verification for that endpoint. Disabling verification leaves HTTPS encryption
+  enabled but does not authenticate the server. It never changes PostgreSQL TLS
+  or global Node.js TLS settings. These settings apply to catalog loading,
+  connection tests, the request builder and saved-model calls. Environment-managed
+  endpoints can set `LLM_VERIFY_SSL=true|false` (blank defaults to false) and
+  `LLM_CA_CERTIFICATE` (PEM; requires HTTPS and verification).
+  **Model request builder** uses the current form, including unsaved endpoint,
+  model, key, thinking effort and SSL settings. It offers editable text and system
+  prompts, `max_tokens` (1–32,768; default 512), `stream` (default false), optional
+  temperature (0–2), basic chat or strict JSON-schema output, and a PNG/JPEG/WebP/GIF
+  image up to 2 MB. Images become base64 `image_url` content with the correct MIME
+  type; image-only requests may leave text empty. Without an upload, the request
+  contains text only: no image field, image placeholder or `image_url` is sent.
+  Removing an image also removes it from subsequent requests. Vision support depends on the
+  model. Streaming displays arriving tokens; non-streaming waits for the complete
+  reply. The preview excludes credentials and omits the image payload. Builder
+  inputs/images are not persisted and do not change research-agent output budgets.
+  Requests have a 60-second server timeout and no automatic retries. Output-limit,
+  schema and transport failures are reported rather than shown as successful tests.
+  The existing 16,000-character reply/thinking and 1 MB response-stream limits
+  still apply. The test suite's local TLS checks use `openssl` to generate
+  temporary self-signed certificates.
+  For strict output, ask for `{"ok":true,"feedback":"..."}` in the prompt.
   **Test connection** sends one strict JSON-schema compatibility probe and
   requires a normally finished, schema-valid assistant response; plain chat
   feedback alone no longer passes. It uses the planning output-token budget
   and the existing 15-second connection-test timeout, and may incur provider
   charges. A passing probe is a basic compatibility check, not a guarantee
   that every research plan will succeed; plans remain strictly validated.
-  **Thinking effort** appears when the selected model's live catalog includes
+  For an on-premises Chat Completions endpoint, turn off **Use provider model catalog**
+  (`LLM_USE_MODEL_CATALOG=false`) and enter the exact model ID and optional thinking
+  effort, e.g. `Qwen3.6-35B-A3B-AWQ` and `high`. No `/models` request is made,
+  even for research; the endpoint decides which efforts it accepts. Use the same
+  request builder in plain chat mode for a basic test; the strict connection
+  probe checks the JSON-schema capability needed for research.
+  Supply the bearer token as the API key (or map your deployment secret to
+  `LLM_API_KEY`). Leave **Use server proxy environment variables** off to connect
+  directly (`LLM_TRUST_ENV=false`); enable it to respect `HTTP_PROXY`, `HTTPS_PROXY`
+  and `NO_PROXY`. In production, enable TLS verification and supply the internal CA
+  certificate if needed. Saved provider settings apply to subsequent model-chat
+  and research requests; a tester request does not change them.
+
+  With catalog discovery enabled (the default), **Thinking effort** appears when the selected model's live catalog includes
   `reasoning_options` with an `effort` entry. Only advertised levels supported
   by this Chat Completions integration are offered (`none`, `minimal`, `low`,
   `medium`, `high`, `xhigh`, `max`); no model-name heuristics are used.
@@ -396,7 +437,7 @@ finishes, truncated output, transport and authentication failures do not trigger
 plan repair. Repair remains within the turn's existing deadline and can incur
 up to three additional generation charges (up to five model steps including a draft
 check). The separate single pre-stream HTTP 503 retry remains unchanged.
-HKEX planning and optional explanations use **low thinking effort** when the
+With catalog discovery enabled, HKEX planning and optional explanations use **low thinking effort** when the
 model catalog advertises it, without overwriting the saved model settings.
 Explicit saved `none`/`minimal` efforts are preserved rather than increased.
 If `low` is not advertised, the saved supported effort (or provider default)

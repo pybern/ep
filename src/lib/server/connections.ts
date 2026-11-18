@@ -4,16 +4,18 @@ import { isIP } from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Client } from "pg";
-import { APICallError, createUIMessageStream, createUIMessageStreamResponse, streamText, type UIMessage, type LanguageModel, type TextStreamPart, type ToolSet } from "ai";
+import { APICallError, createUIMessageStream, createUIMessageStreamResponse, generateText, streamText, type ModelMessage, type UIMessage, type LanguageModel, type TextStreamPart, type ToolSet } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
 import {
-  DEFAULT_CONNECTIONS, isVercelAiGateway, type ApiSettings, type Connections, type ConnectionTestResult,
+  DEFAULT_CONNECTIONS, isVercelAiGateway, type ApiEndpointSettings, type ApiSettings, type Connections, type ConnectionTestResult,
   isReasoningEffort, modelReasoningEfforts, type ModelCatalog, type ReasoningEffort,
   type DatabaseSettings, type PublicConnections,
   MAX_CHAT_MESSAGES, MAX_CHAT_MESSAGE_CHARS, MAX_CHAT_TOTAL_CHARS, type ModelChatMessage, type ModelChatMetadata, type ModelChatToolActivity,
   HKEX_SERVER_TIMEOUT_MS, isOutputTokenLimit, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, OUTPUT_TOKEN_STEPS, outputTokenLimit, type OutputTokenLimits,
 } from "@/lib/connections";
+import { MAX_TEST_IMAGE_BYTES, modelTestBody, TEST_IMAGE_TYPES, type ModelTestRequest } from "@/lib/model-tester";
+import { fetchApi } from "./api-transport";
 
 export class ConnectionError extends Error {
   constructor(message: string, public status = 400) { super(message); }
@@ -60,7 +62,7 @@ function secret(value: unknown, previous: string | undefined, label: string) {
   return value === undefined ? previous ?? "" : text(value, label, 16384);
 }
 
-export function parseApiEndpoint(value: unknown, previous = DEFAULT_CONNECTIONS.api): Pick<ApiSettings, "baseUrl" | "apiKey"> {
+export function parseApiEndpoint(value: unknown, previous = DEFAULT_CONNECTIONS.api): ApiEndpointSettings {
   const input = object(value);
   const baseUrl = text(input.baseUrl, "Base URL").trim().replace(/\/+$/, "");
   let url: URL;
@@ -76,7 +78,22 @@ export function parseApiEndpoint(value: unknown, previous = DEFAULT_CONNECTIONS.
       throw new ConnectionError("Use HTTPS when sending an API key, except to a local loopback endpoint.");
     }
   }
-  return { baseUrl, apiKey };
+  if (input.verifySsl !== undefined && typeof input.verifySsl !== "boolean") {
+    throw new ConnectionError("SSL certificate verification must be enabled or disabled.");
+  }
+  if (input.trustEnv !== undefined && typeof input.trustEnv !== "boolean") {
+    throw new ConnectionError("Environment proxy use must be enabled or disabled.");
+  }
+  const caCertificate = input.caCertificate === undefined ? undefined : text(input.caCertificate, "API CA certificate", 32768).trim();
+  if (caCertificate && (url.protocol !== "https:" || input.verifySsl !== true || !caCertificate.includes("-----BEGIN CERTIFICATE-----"))) {
+    throw new ConnectionError("An API CA certificate requires HTTPS with certificate verification enabled and must be PEM encoded.");
+  }
+  return {
+    baseUrl, apiKey,
+    ...(input.trustEnv === undefined ? {} : { trustEnv: input.trustEnv }),
+    ...(input.verifySsl === undefined ? {} : { verifySsl: input.verifySsl }),
+    ...(caCertificate === undefined ? {} : { caCertificate }),
+  };
 }
 
 export function parseApi(value: unknown, previous = DEFAULT_CONNECTIONS.api): ApiSettings {
@@ -84,12 +101,16 @@ export function parseApi(value: unknown, previous = DEFAULT_CONNECTIONS.api): Ap
   const input = object(value);
   const model = text(input.model, "Model", 256).trim();
   if (!model) throw new ConnectionError("A model ID is required.");
+  if (input.useModelCatalog !== undefined && typeof input.useModelCatalog !== "boolean") {
+    throw new ConnectionError("Model catalog discovery must be enabled or disabled.");
+  }
   if (input.reasoningEffort !== undefined && input.reasoningEffort !== "" && !isReasoningEffort(input.reasoningEffort)) {
     throw new ConnectionError("Choose a valid thinking effort or use the provider default.");
   }
   const outputTokens = parseOutputTokens(input.outputTokens);
   return {
     ...endpoint, model,
+    ...(input.useModelCatalog === undefined ? {} : { useModelCatalog: input.useModelCatalog }),
     ...(isReasoningEffort(input.reasoningEffort) ? { reasoningEffort: input.reasoningEffort } : {}),
     ...(outputTokens ? { outputTokens } : {}),
   };
@@ -203,9 +224,17 @@ export async function loadBootstrapConnections(): Promise<Partial<Connections>> 
   };
 }
 
+function environmentBoolean(key: string) {
+  const value = process.env[key]?.trim();
+  if (!value) return undefined;
+  if (value !== "true" && value !== "false") throw new ConnectionError(`${key} must be true or false.`, 503);
+  return value === "true";
+}
+
 function environmentApi(): ApiSettings | undefined {
   const keys = ["LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "LLM_REASONING_EFFORT",
-    "LLM_PLANNING_OUTPUT_TOKENS", "LLM_CHART_OUTPUT_TOKENS", "LLM_EXPLANATION_OUTPUT_TOKENS"];
+    "LLM_PLANNING_OUTPUT_TOKENS", "LLM_CHART_OUTPUT_TOKENS", "LLM_EXPLANATION_OUTPUT_TOKENS",
+    "LLM_VERIFY_SSL", "LLM_CA_CERTIFICATE", "LLM_TRUST_ENV", "LLM_USE_MODEL_CATALOG"];
   if (!keys.some((key) => process.env[key]?.trim())) return undefined;
   if (!process.env.LLM_BASE_URL?.trim() || !process.env.LLM_MODEL?.trim()) {
     throw new ConnectionError("Environment configuration requires both LLM_BASE_URL and LLM_MODEL.", 503);
@@ -215,6 +244,10 @@ function environmentApi(): ApiSettings | undefined {
     model: process.env.LLM_MODEL,
     apiKey: process.env.LLM_API_KEY ?? "",
     reasoningEffort: process.env.LLM_REASONING_EFFORT,
+    verifySsl: environmentBoolean("LLM_VERIFY_SSL"),
+    trustEnv: environmentBoolean("LLM_TRUST_ENV"),
+    useModelCatalog: environmentBoolean("LLM_USE_MODEL_CATALOG"),
+    ...(process.env.LLM_CA_CERTIFICATE ? { caCertificate: process.env.LLM_CA_CERTIFICATE } : {}),
     outputTokens: Object.fromEntries(OUTPUT_TOKEN_STEPS.map((step) => {
       const value = process.env[`LLM_${step.toUpperCase()}_OUTPUT_TOKENS`];
       return [step, value?.trim() ? Number(value) : undefined];
@@ -432,14 +465,14 @@ async function readLimited(response: Response, maxBytes = 65536) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-export async function listApiModels(settings: Pick<ApiSettings, "baseUrl" | "apiKey">): Promise<string[]> {
+export async function listApiModels(settings: ApiEndpointSettings): Promise<string[]> {
   return (await listApiModelCatalog(settings)).models;
 }
 
-export async function listApiModelCatalog(settings: Pick<ApiSettings, "baseUrl" | "apiKey">, signal?: AbortSignal): Promise<ModelCatalog> {
+export async function listApiModelCatalog(settings: ApiEndpointSettings, signal?: AbortSignal): Promise<ModelCatalog> {
   settings = effectiveApiSettings(settings);
   try {
-    const response = await fetch(`${settings.baseUrl}/models`, {
+    const response = await fetchApi(settings, `${settings.baseUrl}/models`, {
       headers: settings.apiKey ? { Authorization: `Bearer ${settings.apiKey}` } : {},
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]) : AbortSignal.timeout(TIMEOUT_MS),
       redirect: "error", cache: "no-store",
@@ -490,7 +523,7 @@ export async function listApiModelCatalog(settings: Pick<ApiSettings, "baseUrl" 
 }
 
 async function checkReasoningEffort(settings: ApiSettings, signal?: AbortSignal, preferLow = false): Promise<ApiSettings> {
-  if (!settings.reasoningEffort && !preferLow) return settings;
+  if (settings.useModelCatalog === false || (!settings.reasoningEffort && !preferLow)) return settings;
   const catalog = await listApiModelCatalog(settings, signal);
   const supported = modelReasoningEfforts(catalog, settings.model);
   if (preferLow && supported.includes("low") && !["none", "minimal"].includes(settings.reasoningEffort ?? "")) {
@@ -514,7 +547,7 @@ async function completeApi(
   const start = Date.now();
   await checkReasoningEffort(settings, signal);
   try {
-    const response = await fetch(`${settings.baseUrl}/chat/completions`, {
+    const response = await fetchApi(settings, `${settings.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(settings.apiKey ? { Authorization: `Bearer ${settings.apiKey}` } : {}) },
       body: JSON.stringify({
@@ -597,10 +630,34 @@ export type SavedModelRunOptions = {
 };
 export type SavedModelRunner = (options: SavedModelRunOptions) => AsyncIterable<TextStreamPart<ToolSet>>;
 
+export function parseModelTestRequest(value: unknown): ModelTestRequest {
+  const parsed = z.object({
+    prompt: z.string().max(MAX_CHAT_MESSAGE_CHARS),
+    systemPrompt: z.string().max(MAX_CHAT_MESSAGE_CHARS).optional(),
+    image: z.string().max(Math.ceil(MAX_TEST_IMAGE_BYTES / 3) * 4 + 64).optional(),
+    maxTokens: z.number().int().min(1).max(MAX_OUTPUT_TOKENS),
+    stream: z.boolean(),
+    mode: z.enum(["chat", "json"]),
+    temperature: z.number().min(0).max(2).optional(),
+  }).strict().safeParse(value);
+  if (!parsed.success) throw new ConnectionError("Invalid model request. Check prompt length, token limit (1-32,768), streaming, output mode and temperature (0-2).");
+  const request = parsed.data;
+  if (!request.prompt.trim() && !request.image) throw new ConnectionError("Enter a prompt or attach an image.");
+  if (request.image) {
+    const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$/.exec(request.image);
+    if (!match || !TEST_IMAGE_TYPES.some((type) => type === match[1]) || match[2].length % 4 !== 0 ||
+      Buffer.byteLength(match[2], "base64") > MAX_TEST_IMAGE_BYTES) {
+      throw new ConnectionError("Attach a PNG, JPEG, WebP or GIF image of at most 2 MB, encoded as a base64 data URL.");
+    }
+  }
+  return request;
+}
+
 export async function streamChatWithSavedModel(
   messages: ModelChatMessage[], signal?: AbortSignal, runner?: SavedModelRunner,
+  tester?: { settings: ApiSettings; request: ModelTestRequest },
 ): Promise<Response> {
-  const savedSettings = effectiveApiSettings(await loadSavedApi());
+  const savedSettings = effectiveApiSettings(tester?.settings ?? await loadSavedApi());
   const started = Date.now();
   const timeoutMs = runner ? HKEX_SERVER_TIMEOUT_MS : 60000;
   const timeout = AbortSignal.timeout(timeoutMs);
@@ -617,15 +674,18 @@ export async function streamChatWithSavedModel(
     name: "saved-model",
     baseURL: settings.baseUrl,
     apiKey: settings.apiKey,
-    supportsStructuredOutputs: Boolean(runner),
+    supportsStructuredOutputs: Boolean(runner) || tester?.request.mode === "json",
+    ...(tester ? {
+      transformRequestBody: (body: Record<string, unknown>) => ({ ...body, ...modelTestBody(settings.model, tester.request) }),
+    } : {}),
     fetch: async (input, init) => {
-      let response = await fetch(input, { ...init, redirect: "error", cache: "no-store" });
+      let response = await fetchApi(settings, input, { ...init, redirect: "error", cache: "no-store" });
       if (runner && response.status === 503 && !retryUsed && !abortSignal.aborted) {
         retryUsed = true;
         await response.body?.cancel();
         console.warn("HKEX model request returned HTTP 503; using the turn's single delayed retry.");
         await delay(1000, undefined, { signal: abortSignal });
-        response = await fetch(input, { ...init, redirect: "error", cache: "no-store" });
+        response = await fetchApi(settings, input, { ...init, redirect: "error", cache: "no-store" });
       }
       if (!response.ok) {
         await response.body?.cancel();
@@ -711,12 +771,33 @@ export async function streamChatWithSavedModel(
       try {
         const onError = (error: unknown) => { console.error("Saved-model stream:", streamError(error)); };
         const model = provider.chatModel(settings.model);
+        const modelMessages: ModelMessage[] = tester ? [{
+          role: "user",
+          content: [
+            { type: "text", text: tester.request.prompt },
+            ...(tester.request.image ? [{
+              type: "file" as const, data: tester.request.image,
+              mediaType: tester.request.image.slice(5, tester.request.image.indexOf(";")),
+            }] : []),
+          ],
+        }] : messages;
+        const generationOptions = {
+          model, messages: modelMessages, maxOutputTokens: tester?.request.maxTokens ?? 1024, maxRetries: 0, abortSignal,
+          ...(tester?.request.systemPrompt ? { instructions: tester.request.systemPrompt } : {}),
+          ...(tester?.request.temperature === undefined ? {} : { temperature: tester.request.temperature }),
+          ...(settings.reasoningEffort ? { providerOptions: { savedModel: { reasoningEffort: settings.reasoningEffort } } } : {}),
+        };
+        async function* nonStreamingResult() {
+          const result = await generateText(generationOptions);
+          if (result.reasoningText) yield { type: "reasoning-delta" as const, text: result.reasoningText };
+          yield { type: "text-delta" as const, text: result.text };
+          yield { type: "finish" as const, finishReason: result.finishReason };
+        }
         const modelStream = runner ? runner({
           model, settings, messages, abortSignal, onError,
           onToolActivity: (activity) => writer.write({ type: "data-tool", id: activity.id, data: activity }),
-        }) : streamText({
-          model, messages, maxOutputTokens: 1024, maxRetries: 0, abortSignal,
-          ...(settings.reasoningEffort ? { providerOptions: { savedModel: { reasoningEffort: settings.reasoningEffort } } } : {}),
+        }) : tester?.request.stream === false ? nonStreamingResult() : streamText({
+          ...generationOptions,
           onError: ({ error }) => onError(error),
         }).stream;
         for await (const part of modelStream) {
@@ -724,6 +805,12 @@ export async function streamChatWithSavedModel(
           if (part.type === "abort") throw new ConnectionError(timeout.aborted ? `API request timed out after ${timeoutMs / 1000} seconds.` : "Model request was cancelled.", 499);
           if (runner && part.type === "finish" && part.finishReason === "length") {
             throw new ConnectionError("Research generation reached its output-token limit, which may include thinking tokens. Try a narrower question, or raise the output-token limits in Configuration. No automatic retry was performed.", 502);
+          }
+          if (tester && part.type === "finish" && part.finishReason === "length") {
+            throw new ConnectionError("The model request reached its output-token limit. Increase max_tokens and retry.", 502);
+          }
+          if (tester && part.type === "finish" && part.finishReason !== "stop") {
+            throw new ConnectionError("The model request did not finish normally. Any displayed output is incomplete.", 502);
           }
           if (part.type === "text-delta") reply.push(part.text);
           if (part.type === "reasoning-delta") reasoning.push(part.text);
@@ -733,6 +820,16 @@ export async function streamChatWithSavedModel(
         reasoning.end();
         reply.end();
         if (!reply.text.trim()) throw new ConnectionError("API responded, but returned no non-empty assistant feedback.", 502);
+        if (tester?.request.mode === "json") {
+          let value: unknown;
+          try { value = JSON.parse(reply.text); } catch {
+            throw new ConnectionError("The model did not return valid JSON-schema output.", 502);
+          }
+          const result = connectionProbeSchema.safeParse(value);
+          if (!result.success || !result.data.feedback.trim()) {
+            throw new ConnectionError("The model response did not match the requested strict JSON schema.", 502);
+          }
+        }
         writer.write({
           type: "finish",
           messageMetadata: { model: settings.model, baseUrl: runner ? "" : settings.baseUrl, durationMs: Date.now() - started, completed: true },
