@@ -497,6 +497,9 @@ what the user can do next without provider/configuration setup instructions.
 
 ### Table catalog and agent SQL
 
+To document a new SQL source, fill in the [table onboarding worksheet](./docs/data-onboarding-template.md).
+It uses the actual HKEX table and its column dictionary as a worked example.
+
 Use cases with `execution: "database-agent"` open the agent chat and send their
 `useCaseId` to `/api/hkex/chat` (other use cases are rejected there, and
 `/api/insight` rejects agent use cases). **HKEX Short-Selling Research**
