@@ -364,8 +364,17 @@ Gateway environment-key precedence; browser connection overrides are ignored.
 Each actual turn sends its question, conversation context and database metadata
 to your configured AI provider and can incur charges. New query results are
 rendered by the server; requesting an explanation explicitly sends their bounded
-evidence to the provider. Later questions include prior textual results in
-conversation context. Chat and tool activity remain in page memory,
+evidence to the provider. Later questions include each earlier research turn
+as a compact record of what ran, in place of its rendered answer: the
+validated template filters, the catalogue SQL that actually executed
+(including a corrected query), failed queries, stock clarifications, row
+counts, dates covered and up to five leading rows (8 columns, values cut to
+60 characters). The record is capped at 8,000 characters; leading rows are
+dropped first, and a turn whose record still does not fit falls back to its
+answer text. This lets follow-ups such as "same for 2025" or "the top stock"
+reuse the earlier query, and it keeps data-heavy turns from filling the
+64,000-character conversation limit. The planner treats these records as
+context for planning, never as evidence. Chat and tool activity remain in page memory,
 not localStorage, history or dashboard pins. **New chat** clears the conversation.
 Database hostnames, credentials and the configured API base URL are not exposed
 by this workspace. Connection editing, configuration chat and initialization
@@ -436,31 +445,45 @@ Cancellation, timeouts, filtered/refused
 finishes, truncated output, transport and authentication failures do not trigger
 plan repair. Repair remains within the turn's existing deadline and can incur
 up to three additional generation charges (up to five model steps including a draft
-check). The separate single pre-stream HTTP 503 retry remains unchanged.
+check). A repair is not started when less than 20 seconds of the turn remain;
+the error then says planning timed out before the repair could start. When the
+planner checked a SQL draft, each repair is also told the draft SQL and its
+outcome (row count and column names, or the validation/database error), since
+repairs have no tools. The separate single pre-stream HTTP 503 retry remains unchanged.
 With catalog discovery enabled, HKEX planning and optional explanations use **low thinking effort** when the
 model catalog advertises it, without overwriting the saved model settings.
 Explicit saved `none`/`minimal` efforts are preserved rather than increased.
 If `low` is not advertised, the saved supported effort (or provider default)
 remains in use. Research checks the model catalog before generation; catalog
 failures are reported explicitly, and this metadata request is not a generation
-round trip. Configuration tests and the playground retain their saved effort.
+round trip. The check runs alongside the database preflight, and research
+reuses a successfully loaded catalog for up to five minutes for the same endpoint,
+key, TLS and proxy settings; saving settings clears it and reloading the model list refreshes it.
+Configuration tests and the playground retain their saved effort.
 The server validates it, resolves names, queries the saved database and builds
 factual Markdown tables/charts from returned values. No second narrative call
 or chart-selection round trip is made. Query and chart requests normally
 use **one generation call**, or two when checking a SQL draft, excluding the
 existing single 503 retry.
-Invalid plans may also incur up to three correction calls as described above.
+Invalid plans may also incur up to three correction calls as described above,
+and each failed catalogue SQL query at most one (see [Table catalog and agent SQL](#table-catalog-and-agent-sql)).
 Independent stock lookups run concurrently and identical search strings are
-resolved once per turn. After all stock filters are resolved and validated,
-up to three independent queries run concurrently; answer sections retain plan
-order. Each read still uses a separate read-only transaction with the existing
+resolved once per turn. Catalogue SQL queries do not depend on them, so they
+start before the lookups. After all stock filters are resolved and validated,
+up to three independent HKEX queries run concurrently; answer sections retain
+plan order. Each read still uses a separate read-only transaction with the existing
 timeouts and evidence limits, but its transaction setup uses one database
 round trip instead of three. Explicit end dates skip the latest-date scan.
 Preflight schema and coverage remain fresh on every turn; no cross-turn result
 cache is used. Completed chat messages are memoized so typing and subsequent
 streaming updates do not repeatedly parse their Markdown or rebuild charts.
-Up to five stock-name lookups are allowed per plan; ambiguous matches ask
-the user to specify a five-digit code rather than guessing or looping.
+Up to five stock-name lookups are allowed per plan. Within the query's
+currency, an exact stock code or an exact name (ignoring listing suffixes such
+as `-W` or `-R`) wins over names that merely contain the search, so "Ping An"
+resolves to 02318 PING AN rather than also matching PING AN HKDIV. A search
+that still matches several stocks, or none, asks the user for a five-digit
+code (listing the candidates) instead of guessing. Only the queries that need
+that stock are skipped; the rest of the plan still runs.
 Unsupported requests receive a planner clarification, not fabricated data.
 Internal activity records status, SQL templates, parameters and row counts.
 The public conversation shows live provider reasoning in a collapsed Thinking
@@ -507,6 +530,15 @@ ids and their full descriptions, including sample rows and example SQL.
 Preflight metadata has a separate 128,000-character limit to accommodate the
 full catalog; query evidence retains its 32,000-character limit. Oversized or
 incomplete metadata fails explicitly rather than silently dropping descriptions.
+Query evidence is different: when a template or catalogue SQL result would
+exceed its limit, the server keeps as many leading rows as fit and marks the
+section as partial, instead of failing. Catalogue SQL rows also stay within a
+24,000-character budget. Only a single row too large to fit on its own is
+rejected. Trend queries are read newest first, so a cut drops the earliest
+dates and keeps the latest ones; rows are then returned oldest first for
+display. A cut stock trend also drops a partly kept oldest date so every shown
+date covers all requested stocks. HKEX source links are returned once per
+result in `sources` rather than on every row, which leaves room for more rows.
 The only model-callable tool is `runSql` (at most one call and two model steps
 per turn; the final step has no tools so it always returns a plan):
 
@@ -516,7 +548,15 @@ per turn; the final step has no tools so it always returns a plan):
 
 The final plan may contain up to three `sqlQueries` alongside the templated HKEX
 queries. The server re-validates and runs them (100-row cap), renders a Markdown
-table with the tables used, and exposes the SQL through **View SQL**. Templated
+table with the tables used, and exposes the SQL through **View SQL**. If a
+final query is rejected by the SQL validator or fails with a PostgreSQL syntax
+or data error (`42xxx` except permissions, or `22xxx`), the server makes **one
+correction request** for that query (`repairSql` in the tool log): no tools, the
+planning output-token limit, the safe error message, and at most 90 seconds
+within the turn deadline (skipped when less than 20 seconds remain). The
+corrected SQL is validated and scoped again before it runs; if that also fails,
+the section says the query could not be completed. Connection, permission,
+read-limit and evidence-size failures are never sent back for correction. Templated
 HKEX queries are still preferred for HKEX rankings/trends because their charts
 are chosen in the plan and validated against HKEX evidence. SQL results get
 their own insight cards and charts (below). Without a catalog (not yet re-initialized) the
@@ -699,7 +739,8 @@ statement timeouts and two-second lock timeouts. There is no arbitrary-SQL tool,
 write tool, URL-fetch tool, or access to other tables. Grant the database user
 only the SELECT privileges it needs in production. Research is bounded to one
 planning generation, three queries, five stock lookups, ten database reads
-including preflight, a 366-day date span, 32,000 characters per evidence result,
+including preflight, a 366-day date span, 32,000 characters per evidence result
+(larger results are cut to the rows that fit and marked partial),
 and a configurable output-token limit per model call (see below). Summaries show
 up to ten rows per query; chart tables retain all returned rows.
 
@@ -721,9 +762,13 @@ keeps the answer. The provider-stream size cap grows with the largest limit
 shortened for display instead of failing the turn.
 
 Time is a safety net rather than the main limit. Each research or explanation
-request has a 290-second server deadline after database preflight (including
-catalog validation), covering planning, queries and the optional chart request,
-with a 320-second browser deadline for the entire request. The chat route sets
+request has a 290-second server deadline that starts before database preflight
+(including catalog validation) and covers planning, queries and the optional
+chart request, with a 320-second browser deadline for the entire request. The
+chart request runs after the answer, so it has its own budget: at most 60
+seconds, ending 5 seconds before the deadline, and it is skipped when less than
+10 seconds would remain. A slow chart therefore adds no chart but never turns
+a completed answer into a timeout. The chat route sets
 `maxDuration = 300` so hosts such as Vercel allow the full turn, including
 the single pre-stream 503 retry described above; SDK-level retries remain disabled.
 Cancellation closes active database reads as well as model generation.

@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import path from "node:path";
@@ -391,6 +391,7 @@ export function updateConnectionStorage<T>(update: () => Promise<T>): Promise<T>
 }
 
 export function saveConnection(kind: "api" | "database", value: unknown): Promise<PublicConnections> {
+  modelCatalogs.clear();
   return updateConnectionStorage(async () => {
     if (kind === "api" ? environmentApi() : environmentDatabase()) {
       throw new ConnectionError("This connection is managed by environment variables. Edit .env.local or your deployment environment and restart/redeploy; saved settings would not override it.", 409);
@@ -469,6 +470,23 @@ export async function listApiModels(settings: ApiEndpointSettings): Promise<stri
   return (await listApiModelCatalog(settings)).models;
 }
 
+// Research turns reuse a recent catalog instead of calling GET /models before every plan.
+const MODEL_CATALOG_TTL_MS = 5 * 60 * 1000;
+const MODEL_CATALOG_CACHE_SIZE = 16;
+const modelCatalogs = new Map<string, { expires: number; catalog: ModelCatalog }>();
+
+function modelCatalogKey(settings: ApiEndpointSettings) {
+  return createHash("sha256").update(JSON.stringify([
+    settings.baseUrl, settings.apiKey, settings.verifySsl === true, settings.caCertificate, settings.trustEnv === true,
+  ])).digest("hex");
+}
+
+async function cachedModelCatalog(settings: ApiEndpointSettings, signal?: AbortSignal): Promise<ModelCatalog> {
+  const cached = modelCatalogs.get(modelCatalogKey(effectiveApiSettings(settings)));
+  if (cached && cached.expires > Date.now()) return cached.catalog;
+  return listApiModelCatalog(settings, signal);
+}
+
 export async function listApiModelCatalog(settings: ApiEndpointSettings, signal?: AbortSignal): Promise<ModelCatalog> {
   settings = effectiveApiSettings(settings);
   try {
@@ -508,10 +526,13 @@ export async function listApiModelCatalog(settings: ApiEndpointSettings, signal?
       return [model.id, [...new Set(efforts)]];
     });
     if (!entries.length) throw new ConnectionError("The provider returned an empty model catalog. You can enter a model ID manually.", 502);
-    return {
+    const catalog: ModelCatalog = {
       models: [...new Set(entries.map(([id]) => id))].sort((a, b) => a.localeCompare(b)),
       reasoningEfforts: Object.fromEntries(entries),
     };
+    while (modelCatalogs.size >= MODEL_CATALOG_CACHE_SIZE) modelCatalogs.delete(modelCatalogs.keys().next().value!);
+    modelCatalogs.set(modelCatalogKey(settings), { expires: Date.now() + MODEL_CATALOG_TTL_MS, catalog });
+    return catalog;
   } catch (error) {
     if (error instanceof ConnectionError) throw error;
     if (signal?.aborted) throw new ConnectionError("Model catalog request was cancelled or timed out.", 499);
@@ -524,7 +545,7 @@ export async function listApiModelCatalog(settings: ApiEndpointSettings, signal?
 
 async function checkReasoningEffort(settings: ApiSettings, signal?: AbortSignal, preferLow = false): Promise<ApiSettings> {
   if (settings.useModelCatalog === false || (!settings.reasoningEffort && !preferLow)) return settings;
-  const catalog = await listApiModelCatalog(settings, signal);
+  const catalog = preferLow ? await cachedModelCatalog(settings, signal) : await listApiModelCatalog(settings, signal);
   const supported = modelReasoningEfforts(catalog, settings.model);
   if (preferLow && supported.includes("low") && !["none", "minimal"].includes(settings.reasoningEffort ?? "")) {
     return { ...settings, reasoningEffort: "low" };
@@ -625,6 +646,8 @@ export type SavedModelRunOptions = {
   settings: ApiSettings;
   messages: ModelChatMessage[];
   abortSignal: AbortSignal;
+  /** Epoch milliseconds at which the server deadline aborts the turn. */
+  deadline: number;
   onError: (error: unknown) => void;
   onToolActivity: (activity: ModelChatToolActivity) => void;
 };
@@ -653,17 +676,22 @@ export function parseModelTestRequest(value: unknown): ModelTestRequest {
   return request;
 }
 
+/** A pending runner (for example one awaiting database preflight) is prepared alongside the model settings. */
 export async function streamChatWithSavedModel(
-  messages: ModelChatMessage[], signal?: AbortSignal, runner?: SavedModelRunner,
+  messages: ModelChatMessage[], signal?: AbortSignal, pendingRunner?: SavedModelRunner | Promise<SavedModelRunner>,
   tester?: { settings: ApiSettings; request: ModelTestRequest },
 ): Promise<Response> {
-  const savedSettings = effectiveApiSettings(tester?.settings ?? await loadSavedApi());
   const started = Date.now();
-  const timeoutMs = runner ? HKEX_SERVER_TIMEOUT_MS : 60000;
+  const timeoutMs = pendingRunner ? HKEX_SERVER_TIMEOUT_MS : 60000;
+  const deadline = started + timeoutMs;
   const timeout = AbortSignal.timeout(timeoutMs);
   const upstream = new AbortController();
   const abortSignal = AbortSignal.any([...(signal ? [signal] : []), timeout, upstream.signal]);
-  const settings = await checkReasoningEffort(savedSettings, abortSignal, Boolean(runner));
+  const [settings, runner] = await Promise.all([
+    (tester ? Promise.resolve(tester.settings) : loadSavedApi())
+      .then((api) => checkReasoningEffort(effectiveApiSettings(api), abortSignal, Boolean(pendingRunner))),
+    pendingRunner,
+  ]);
   let transportError: ConnectionError | undefined;
   let retryUsed = false;
   // Larger token limits need room for SSE framing (roughly 100-400 bytes per streamed token).
@@ -794,7 +822,7 @@ export async function streamChatWithSavedModel(
           yield { type: "finish" as const, finishReason: result.finishReason };
         }
         const modelStream = runner ? runner({
-          model, settings, messages, abortSignal, onError,
+          model, settings, messages, abortSignal, deadline, onError,
           onToolActivity: (activity) => writer.write({ type: "data-tool", id: activity.id, data: activity }),
         }) : tester?.request.stream === false ? nonStreamingResult() : streamText({
           ...generationOptions,
