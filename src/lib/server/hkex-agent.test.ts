@@ -133,7 +133,9 @@ describe("single-call HKEX research", () => {
     await saveSettings(); interceptChat();
     const result = await research(vi.fn(), useCaseId);
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ model: "fixture-model", stream: true, max_tokens: 4096, reasoning_effort: "low" });
+    expect(calls[0]).toMatchObject({ model: "fixture-model", stream: true, max_tokens: 4096 });
+    expect(calls[0].reasoning_effort).toBeUndefined();
+    expect(modelCatalogRequests).toBe(0);
     expect(calls[0].tools).toBeUndefined();
     expect(calls[0].response_format).toMatchObject({ type: "json_schema", json_schema: { name: "hkexResearchPlan", strict: true } });
     expect(JSON.stringify(calls[0].messages)).toContain("2026-01-05");
@@ -155,10 +157,10 @@ describe("single-call HKEX research", () => {
       kpis: expect.arrayContaining([{ label: "Returned-stock total", value: "HKD 12,345.67", hint: "Returned rows only, not a market total" }]),
     });
   });
-  it.each(["medium", "high"] as const)("uses low research effort without overwriting saved %s", async (effort) => {
+  it.each(["medium", "high"] as const)("sends the saved %s effort instead of lowering it", async (effort) => {
     await saveSettings(effort); interceptChat();
     await research();
-    expect(calls[0].reasoning_effort).toBe("low");
+    expect(calls[0].reasoning_effort).toBe(effort);
     expect((await loadConnections()).api.reasoningEffort).toBe(effort);
   });
   it.each(["hk", "hkex-db"])("inherits the manual provider and effort without discovery for %s", async (useCaseId) => {
@@ -368,7 +370,7 @@ describe("single-call HKEX research", () => {
     expect(result.tools?.find((item) => item.explanationId)?.explanationId).toMatch(/^[0-9a-f-]{36}$/);
   });
   it("reuses the provider model catalog across research turns until settings are saved again", async () => {
-    await saveSettings(); interceptChat();
+    await saveSettings("high"); interceptChat();
     await research();
     await research();
     expect(modelCatalogRequests).toBe(1);
@@ -377,7 +379,7 @@ describe("single-call HKEX research", () => {
     expect(modelCatalogRequests).toBe(2);
   });
   it("checks the model settings while the database preflight is still running", async () => {
-    await saveSettings(); interceptChat();
+    await saveSettings("high"); interceptChat();
     const original = pg.query.getMockImplementation()!;
     let releasePreflight!: () => void;
     const preflight = new Promise<void>((resolve) => { releasePreflight = resolve; });
@@ -435,7 +437,8 @@ describe("single-call HKEX research", () => {
     expect(calls).toHaveLength(2);
     expect(calls[1].response_format).toBeUndefined();
     expect(calls[1].tools).toBeUndefined();
-    expect(calls[1]).toMatchObject({ max_tokens: 4096, reasoning_effort: "low" });
+    expect(calls[1]).toMatchObject({ max_tokens: 4096 });
+    expect(calls[1].reasoning_effort).toBeUndefined();
     expect(JSON.stringify(calls[1].messages)).toContain("12345.67");
     expect(explanationResult.message.content).toContain("## Explanation");
     expect(pg.query.mock.calls.some(([sql]) => sql.startsWith("WITH latest") || sql.includes("information_schema.columns"))).toBe(false);

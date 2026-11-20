@@ -35,10 +35,11 @@ export type ProviderCompatibilityChange = Partial<Pick<ApiSettings, "structuredO
  * Fields for adapting requests to a strict provider. Header and JSON text is edited locally and only valid values
  * reach the parent, which is told about invalid JSON through onError so Test and Save can be blocked.
  */
-export function ProviderCompatibility({ api, onChange, onError }: {
+export function ProviderCompatibility({ api, onChange, onError, defaultOpen = false }: {
   api: Omit<ApiSettings, "apiKey">;
   onChange: (change: ProviderCompatibilityChange) => void;
   onError: (message: string) => void;
+  defaultOpen?: boolean;
 }) {
   const [rows, setRows] = useState<Row[]>(() => rowsFrom(api.requestHeaders));
   const [dropText, setDropText] = useState(() => (api.dropParams ?? []).join(", "));
@@ -46,7 +47,7 @@ export function ProviderCompatibility({ api, onChange, onError }: {
   const [bodyError, setBodyError] = useState("");
   const [copied, setCopied] = useState("");
   const configured = Boolean(api.structuredOutput || api.streaming === false || api.maxTokensParam || api.dropParams?.length || api.extraBody || api.requestHeaders);
-  const [open, setOpen] = useState(configured);
+  const [open, setOpen] = useState(configured || defaultOpen);
 
   function setHeaders(next: Row[]) {
     setRows(next);

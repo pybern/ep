@@ -273,11 +273,33 @@ describe("automatic model dropdown loading", () => {
     expect(JSON.parse(save![1].body).settings.outputTokens).toEqual({ planning: 8000 });
   });
 
+  it("groups model settings into tabs that keep their state and reveal an invalid field", async () => {
+    await unlock();
+    const panel = (id: string) => container.querySelector<HTMLElement>(`[role="tabpanel"][data-tab="${id}"]`)!;
+    const tab = (label: string) => [...container.querySelectorAll<HTMLElement>('[role="tab"]')].find((item) => item.textContent === label)!;
+    expect(panel("endpoint").hidden).toBe(false);
+    expect(panel("model").hidden).toBe(true);
+    await act(async () => { tab("Model & limits").click(); });
+    expect(panel("endpoint").hidden).toBe(true);
+    await edit('input[aria-label="Model"]', "");
+    await act(async () => { tab("Chat").click(); });
+    expect(container.querySelector<HTMLFormElement>("form")!.hidden).toBe(true);
+    await act(async () => { tab("Endpoint").click(); });
+    const form = container.querySelector<HTMLFormElement>("form")!;
+    const report = vi.spyOn(form, "reportValidity").mockReturnValue(false);
+    await act(async () => { tab("Compatibility").click(); });
+    await act(async () => {
+      container.querySelector('input[aria-label="Model"]')!.dispatchEvent(new Event("invalid", { cancelable: true }));
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(panel("model").hidden).toBe(false);
+    expect(report).toHaveBeenCalled();
+  });
   it("keeps chat on saved settings while editing and resets it after an API save", async () => {
     await unlock();
     const savedModel = DEFAULT_CONNECTIONS.api.model;
     await edit('input[aria-label="Model"]', "unsaved/model");
-    const chatSection = () => [...container.querySelectorAll("section")].find((section) => section.textContent?.includes("Chat with your saved model"))!;
+    const chatSection = () => [...container.querySelectorAll("section")].findLast((section) => section.textContent?.includes("Chat with your saved model"))!;
     expect(chatSection().textContent).toContain(savedModel);
     expect(chatSection().textContent).not.toContain("unsaved/model");
     fetchMock.mockImplementationOnce(async (url: string, init: RequestInit) => {

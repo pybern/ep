@@ -366,7 +366,7 @@ describe("environment-first connection settings", () => {
     vi.stubEnv("LLM_VERIFY_SSL", "invalid-but-shadowed");
     expect((await loadConnections()).api).toMatchObject({ model: "updated", verifySsl: false });
     expect(await loadSavedApi()).toMatchObject({ model: "updated", verifySsl: false, apiKey: "environment-api-secret" });
-    expect(await loadBootstrapConnections()).toEqual({});
+    expect(await loadBootstrapConnections()).toEqual({ api: stored });
   });
 
   it("keeps file-based API fallback and independent database loading", async () => {
@@ -482,7 +482,7 @@ describe("PostgreSQL API configuration storage", () => {
     }));
   });
 
-  it("saves parameterized settings, preserves omitted keys and removes legacy file secrets", async () => {
+  it("saves parameterized settings, preserves omitted keys and mirrors them to the bootstrap file", async () => {
     vi.stubEnv("AI_GATEWAY_API_KEY", "environment-key-must-not-be-persisted");
     const result = await saveConnection("api", { baseUrl: api.baseUrl, model: "updated", reasoningEffort: "max" });
     expect(stored).toEqual({ ...api, model: "updated", reasoningEffort: "max" });
@@ -490,7 +490,7 @@ describe("PostgreSQL API configuration storage", () => {
     expect(JSON.stringify(result)).not.toContain(api.apiKey);
     expect(await loadSavedApi()).toEqual(stored);
     const file = JSON.parse(await readFile(process.env.CONNECTION_CONFIG_PATH!, "utf8"));
-    expect(file).toEqual({ database });
+    expect(file).toEqual({ database, api: stored });
     expect(pg.query).toHaveBeenCalledWith(expect.stringContaining("ON CONFLICT (kind)"), [JSON.stringify(stored)]);
     expect(pg.query).toHaveBeenCalledWith("COMMIT");
     expect(pg.query).toHaveBeenCalledWith(expect.stringContaining("pg_advisory_xact_lock"));

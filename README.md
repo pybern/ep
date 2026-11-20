@@ -519,12 +519,12 @@ the error then says planning timed out before the repair could start. When the
 planner checked a SQL draft, each repair is also told the draft SQL and its
 outcome (row count and column names, or the validation/database error), since
 repairs have no tools. The separate single pre-stream HTTP 503 retry remains unchanged.
-With catalog discovery enabled, HKEX planning and optional explanations use **low thinking effort** when the
-model catalog advertises it, without overwriting the saved model settings.
-Explicit saved `none`/`minimal` efforts are preserved rather than increased.
-If `low` is not advertised, the saved supported effort (or provider default)
-remains in use. Research checks the model catalog before generation; catalog
-failures are reported explicitly, and this metadata request is not a generation
+HKEX planning and optional explanations use the saved thinking effort exactly as
+configured, or the provider default when none is saved; research never lowers or
+raises it. With a saved effort and catalog discovery enabled, research checks the
+model catalog before generation and reports catalog failures explicitly. With no
+saved effort, or with catalog discovery off, no catalog request is made, so providers
+without `GET /models` work. The metadata request is not a generation
 round trip. The check runs alongside the database preflight, and research
 reuses a successfully loaded catalog for up to five minutes for the same endpoint,
 key, TLS and proxy settings; saving settings clears it and reloading the model list refreshes it.
@@ -887,10 +887,14 @@ initializer revokes table access from `PUBLIC`; a separate runtime role needs
 `SELECT`, `INSERT` and `UPDATE` on this table. API saves use a transaction and an
 advisory lock to preserve omitted secrets across concurrent saves.
 
-For file-managed connections, only the PostgreSQL connection (including its password) remains in the
-server-only, gitignored `.local/connections.json`, written atomically with
-owner-only permissions. It is the bootstrap needed to connect before loading
-settings. Override its location with `CONNECTION_CONFIG_PATH` on a private
+The server-only, gitignored `.local/connections.json` holds the PostgreSQL
+connection (including its password), written atomically with owner-only
+permissions. It is the bootstrap needed to connect before loading settings.
+Every API save to an initialized PostgreSQL also mirrors the saved API settings,
+including the API key and custom header values, into this file so it reflects
+the server's last saved provider configuration. PostgreSQL remains authoritative
+while initialized; the file is read only when PostgreSQL has no configuration
+table and no `LLM_*` environment group applies. Override its location with `CONNECTION_CONFIG_PATH` on a private
 persistent volume. `CONFIG_ADMIN_TOKEN` and `AI_GATEWAY_API_KEY` remain environment
 secrets and are never migrated into PostgreSQL.
 

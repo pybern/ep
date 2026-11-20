@@ -520,8 +520,9 @@ export function saveConnection(kind: "api" | "database", value: unknown): Promis
     const database = await configuredDatabase();
     const stored = database ? await withConfigurationDatabase(database, persistApi) : undefined;
     if (stored) {
-      try { await removeLegacyApi(); } catch {
-        throw new ConnectionError("API settings were saved in PostgreSQL, but the legacy file could not be cleaned up. Check its permissions and retry.", 500);
+      // The bootstrap file mirrors the saved settings; PostgreSQL stays authoritative while it is initialized.
+      try { await writeConnectionDocument({ ...await loadConnectionDocument(), api: stored }); } catch {
+        throw new ConnectionError("API settings were saved in PostgreSQL, but the bootstrap file could not be updated. Check its permissions and retry.", 500);
       }
       return publicConnections({ api: stored, database: database! });
     }
@@ -641,14 +642,12 @@ export async function listApiModelCatalog(settings: ApiEndpointSettings, signal?
   }
 }
 
-async function checkReasoningEffort(settings: ApiSettings, signal?: AbortSignal, preferLow = false): Promise<ApiSettings> {
-  if (settings.useModelCatalog === false || (!settings.reasoningEffort && !preferLow)) return settings;
-  const catalog = preferLow ? await cachedModelCatalog(settings, signal) : await listApiModelCatalog(settings, signal);
+// Only an explicitly saved effort is validated, so providers without GET /models work with the provider default.
+async function checkReasoningEffort(settings: ApiSettings, signal?: AbortSignal, reuseCatalog = false): Promise<ApiSettings> {
+  if (settings.useModelCatalog === false || !settings.reasoningEffort) return settings;
+  const catalog = reuseCatalog ? await cachedModelCatalog(settings, signal) : await listApiModelCatalog(settings, signal);
   const supported = modelReasoningEfforts(catalog, settings.model);
-  if (preferLow && supported.includes("low") && !["none", "minimal"].includes(settings.reasoningEffort ?? "")) {
-    return { ...settings, reasoningEffort: "low" };
-  }
-  if (settings.reasoningEffort && !supported.includes(settings.reasoningEffort)) {
+  if (!supported.includes(settings.reasoningEffort)) {
     throw new ConnectionError("The provider catalog does not advertise the selected thinking effort for this model. Refresh models and select a supported effort, or choose Provider default.");
   }
   return settings;
