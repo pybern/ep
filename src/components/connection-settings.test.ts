@@ -109,17 +109,17 @@ describe("automatic model dropdown loading", () => {
     await unlock();
     expect(container.querySelector('select[aria-label="Thinking effort"]')).toBeNull();
     await edit('input[aria-label="Model"]', "alibaba/qwen3-coder");
-    const values = () => [...container.querySelectorAll("select option")].map((option) => option.getAttribute("value"));
+    const values = () => [...container.querySelectorAll('select[aria-label="Thinking effort"] option')].map((option) => option.getAttribute("value"));
     expect(values()).toEqual(["", "none", "low", "high", "max"]);
     await chooseEffort("high");
-    expect(container.querySelector<HTMLSelectElement>("select")!.value).toBe("high");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Thinking effort"]')!.value).toBe("high");
     await edit('input[aria-label="Model"]', "openai/gpt-4.1-mini");
-    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector('select[aria-label="Thinking effort"]')).toBeNull();
     await edit('input[aria-label="Model"]', "alibaba/qwen3-coder");
-    expect(container.querySelector<HTMLSelectElement>("select")!.value).toBe("");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Thinking effort"]')!.value).toBe("");
     await chooseEffort("max");
     await edit('input[type="url"]', "https://custom.example/v1");
-    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector('select[aria-label="Thinking effort"]')).toBeNull();
   });
   it("tests and persists the selected effort, restores it on unlock and allows clearing an unverified value", async () => {
     const saved: PublicConnections = {
@@ -128,7 +128,7 @@ describe("automatic model dropdown loading", () => {
     };
     fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => saved }));
     await unlock();
-    expect(container.querySelector<HTMLSelectElement>("select")!.value).toBe("high");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Thinking effort"]')!.value).toBe("high");
     await chooseEffort("max");
     fetchMock.mockImplementationOnce(async (url: string, init: RequestInit) => {
       expect(url).toBe("/api/config/test");
@@ -145,16 +145,16 @@ describe("automatic model dropdown loading", () => {
     await act(async () => {
       container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     });
-    expect(container.querySelector<HTMLSelectElement>("select")!.value).toBe("max");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Thinking effort"]')!.value).toBe("max");
     fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ models: catalog, reasoningEfforts: {} }) }));
     await act(async () => {
       [...container.querySelectorAll("button")].find((button) => button.textContent === "Refresh models")!.click();
     });
     await loadCatalog();
-    expect(container.querySelector<HTMLSelectElement>("select")!.value).toBe("max");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Thinking effort"]')!.value).toBe("max");
     expect(container.querySelector<HTMLOptionElement>('option[value="max"]')!.disabled).toBe(true);
     await chooseEffort("");
-    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector('select[aria-label="Thinking effort"]')).toBeNull();
   });
   it("indicates the Gateway environment override and restores key entry for custom endpoints", async () => {
     fetchMock.mockImplementationOnce(async () => ({ ok: true, json: async () => ({
@@ -233,7 +233,7 @@ describe("automatic model dropdown loading", () => {
   it("uses one editable combobox for catalog selection, search and custom IDs", async () => {
     await unlock();
     expect(container.querySelectorAll("input[list]")).toHaveLength(1);
-    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector('select[aria-label="Thinking effort"]')).toBeNull();
     expect(container.querySelector('input[type="search"]')).toBeNull();
     const model = container.querySelector<HTMLInputElement>('input[aria-label="Model"]')!;
     expect(model.list).toBe(container.querySelector("datalist"));

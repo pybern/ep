@@ -5,6 +5,7 @@ import type { ApiSettings } from "@/lib/connections";
 import { MAX_OUTPUT_TOKENS } from "@/lib/connections";
 import { sendModelChat } from "@/lib/model-chat-stream";
 import { MAX_TEST_IMAGE_BYTES, modelTestBody, TEST_IMAGE_TYPES, type ModelTestRequest } from "@/lib/model-tester";
+import { applyProviderOverrides } from "@/lib/provider-request";
 
 const inputClass = "mt-2 w-full border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white";
 const buttonClass = "min-h-10 border border-slate-600 px-4 text-sm text-slate-200 hover:border-sky-400 disabled:opacity-50";
@@ -131,10 +132,10 @@ export function ModelRequestBuilder({ token, settings, disabled }: { token: stri
       {pending && <button type="button" className={`${buttonClass} mt-3`} onClick={cancel}>Cancel request</button>}
     </form>
     <details className="mt-5 text-xs text-slate-400" onToggle={(event) => setPreviewOpen(event.currentTarget.open)}>
-      <summary className="cursor-pointer">Request body preview (credentials excluded)</summary>
-      {preview && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify({
+      <summary className="cursor-pointer">Request body preview (credentials excluded, Provider compatibility applied)</summary>
+      {preview && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(applyProviderOverrides({
         ...preview, ...(settings.reasoningEffort ? { reasoning_effort: settings.reasoningEffort } : {}),
-      }, null, 2)}</pre>}
+      }, settings), null, 2)}</pre>}
     </details>
     <div aria-live="polite">
       {error && <p role="alert" className="mt-4 text-sm text-rose-300">{error}</p>}

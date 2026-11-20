@@ -314,7 +314,7 @@ describe("environment-first connection settings", () => {
     vi.stubEnv("DB_PASSWORD", "environment-db-secret");
   }
 
-  it("loads both groups without touching corrupt legacy storage or PostgreSQL", async () => {
+  it("uses environment defaults when the provider table is missing without reading corrupt legacy storage", async () => {
     await writeFile(process.env.CONNECTION_CONFIG_PATH!, "invalid JSON");
     setApiEnvironment();
     setDatabaseEnvironment();
@@ -332,34 +332,40 @@ describe("environment-first connection settings", () => {
     });
     expect(await loadSavedApi()).toEqual(loaded.api);
     expect(await loadSavedDatabase()).toEqual(loaded.database);
-    expect(pg.connect).not.toHaveBeenCalled();
+    expect(pg.connect).toHaveBeenCalled();
     const response = await GET(configRequest());
     expect(response.status).toBe(200);
     expect(await response.text()).not.toContain("environment-api-secret");
     expect(JSON.stringify(publicConnections(loaded))).not.toContain("environment-db-secret");
   });
 
-  it("uses env LLM with the saved database without querying the configuration table", async () => {
+  it("checks the saved database before using the environment provider", async () => {
     await writeFile(process.env.CONNECTION_CONFIG_PATH!, JSON.stringify({ api: "invalid", database }));
     setApiEnvironment();
     expect((await loadConnections()).database).toEqual(database);
     expect((await loadSavedApi()).model).toBe("environment-model");
-    expect(pg.connect).not.toHaveBeenCalled();
+    expect(pg.connect).toHaveBeenCalled();
   });
 
   it("uses env database for PostgreSQL API reads and saves without persisting env credentials", async () => {
     setDatabaseEnvironment();
-    let stored = api;
+    setApiEnvironment();
+    vi.stubEnv("LLM_VERIFY_SSL", "true");
+    let stored: ApiSettings | undefined;
     pg.query.mockImplementation(async (sql: string, parameters?: string[]) => {
       if (sql.includes("to_regclass")) return { rows: [{ relation: "insightful_configuration" }] };
-      if (sql.startsWith("SELECT settings")) return { rows: [{ settings: stored }] };
+      if (sql.startsWith("SELECT settings")) return { rows: stored ? [{ settings: stored }] : [] };
       if (sql.startsWith("INSERT")) stored = JSON.parse(parameters![0]);
       return { rows: [] };
     });
-    expect((await loadConnections()).api).toEqual(api);
+    expect((await loadConnections()).api.verifySsl).toBe(true);
     expect(pg.options).toHaveBeenCalledWith(expect.objectContaining({ host: "environment-db.example.test", password: "environment-db-secret" }));
-    await saveConnection("api", { ...api, model: "updated" });
-    expect((await loadSavedApi()).model).toBe("updated");
+    const response = await PUT(configRequest("PUT", { kind: "api", settings: { baseUrl: api.baseUrl, model: "updated", verifySsl: false } }));
+    expect(response.status).toBe(200);
+    expect(await response.text()).not.toContain("environment-api-secret");
+    vi.stubEnv("LLM_VERIFY_SSL", "invalid-but-shadowed");
+    expect((await loadConnections()).api).toMatchObject({ model: "updated", verifySsl: false });
+    expect(await loadSavedApi()).toMatchObject({ model: "updated", verifySsl: false, apiKey: "environment-api-secret" });
     expect(await loadBootstrapConnections()).toEqual({});
   });
 
@@ -393,17 +399,16 @@ describe("environment-first connection settings", () => {
     for (const kind of ["api", "database"] as const) {
       const response = await PUT(configRequest("PUT", { kind, settings: kind === "api" ? api : database }));
       expect(response.status).toBe(409);
-      expect(await response.text()).toContain("managed by environment");
+      expect(await response.text()).toContain(kind === "api" ? "Initialize PostgreSQL" : "managed by environment");
     }
     expect(await readFile(process.env.CONNECTION_CONFIG_PATH!, "utf8")).toBe(content);
-    expect(pg.query).not.toHaveBeenCalled();
   });
 
   it("retains database saving when only the LLM group is environment-managed", async () => {
     setApiEnvironment();
     await saveConnection("database", database);
     expect(await loadBootstrapConnections()).toEqual({ database });
-    expect(pg.query).not.toHaveBeenCalled();
+    expect(pg.query).toHaveBeenCalled();
   });
 
   it("preserves omitted env database passwords during connection tests", async () => {
@@ -795,7 +800,7 @@ describe("live model catalog", () => {
   });
   it("protects model listing and uses saved credentials without exposing or saving them", async () => {
     expect((await MODELS(configRequest("POST", { settings: api }, "wrong"))).status).toBe(401);
-    await saveConnection("api", api);
+    await saveConnection("api", { ...api, baseUrl });
     providerBody = JSON.stringify({ data: [{ id: "alibaba/qwen3-coder" }, { id: "openai/gpt-4.1-mini" }] });
     const response = await MODELS(configRequest("POST", { settings: { baseUrl } }));
     expect(response.status).toBe(200);
@@ -805,7 +810,9 @@ describe("live model catalog", () => {
       reasoningEfforts: { "alibaba/qwen3-coder": [], "openai/gpt-4.1-mini": [] },
     });
     expect(received.authorization).toBe(`Bearer ${api.apiKey}`);
-    expect((await loadConnections()).api).toEqual(api);
+    expect((await loadConnections()).api).toEqual({ ...api, baseUrl });
+    await MODELS(configRequest("POST", { settings: { baseUrl: `${baseUrl}/other` } }));
+    expect(received.authorization).toBeUndefined();
     expect((await MODELS(configRequest("POST", { settings: { baseUrl: "bad" } }))).status).toBe(400);
   });
 });

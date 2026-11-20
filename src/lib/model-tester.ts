@@ -1,5 +1,6 @@
 export const MAX_TEST_IMAGE_BYTES = 2 * 1024 * 1024;
 export const TEST_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+export const CONNECTION_PROBE_PROMPT = 'Return one JSON object matching the requested schema: {"ok":true,"feedback":"Connection confirmed."}. Use a short confirmation for feedback, no Markdown or extra fields.';
 export type ModelTestRequest = {
   prompt: string;
   systemPrompt?: string;

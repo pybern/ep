@@ -80,11 +80,12 @@ available. Configuration keeps its administrator diagnostics.
 
 ## Connection configuration
 
-### Environment-first connections
+### Connection precedence
 
 Copy `.env.example` to `.env.local` for a new setup (do not overwrite an existing
-env file). The LLM and database groups independently take precedence over saved
-configuration. Set `LLM_BASE_URL` (including `/v1` where applicable), `LLM_MODEL`,
+env file). A provider row saved in PostgreSQL takes precedence over the entire
+`LLM_*` group, including an explicit `false` for certificate verification. Until
+there is a row, set `LLM_BASE_URL` (including `/v1` where applicable), `LLM_MODEL`,
 and optionally `LLM_API_KEY`, `LLM_REASONING_EFFORT`,
 `LLM_PLANNING_OUTPUT_TOKENS`, `LLM_CHART_OUTPUT_TOKENS` and
 `LLM_EXPLANATION_OUTPUT_TOKENS`. Token limits accept whole numbers from 256 to
@@ -97,17 +98,85 @@ Environment connection groups are complete replacements, not field-by-field
 merges: omitted credentials are empty, never inherited from a different endpoint.
 Leave every variable in a group unset or blank to use that group's existing
 JSON/PostgreSQL configuration. Partial or invalid environment groups fail
-explicitly; they do not fall back. A complete environment LLM group avoids
-reading the PostgreSQL settings table.
+explicitly when selected; they do not fall back. If a database is configured
+but unreachable, the app reports the error rather than silently switching providers.
 
 Next.js loads `.env.local` server-side. On deployment, set these same variables
 in the host's environment settings. Do not use `NEXT_PUBLIC_` for credentials.
 Restart/redeploy after editing variables. The Configuration page displays and
-tests effective connections; saving an environment-managed group is rejected
-with instructions to edit the environment instead. Other groups retain normal
-saving behavior. Environment values are not migrated to configuration storage,
-and existing saved connections remain available when env groups are removed.
+tests effective connections. Initialize PostgreSQL and use **Save settings** to
+override the LLM defaults without a redeploy. On the first save, leaving the
+key unchanged retains it for the same endpoint in the saved row. Database
+bootstrap settings supplied through `DB_*` remain environment-managed.
 `AI_GATEWAY_API_KEY` retains its Gateway-only precedence over `LLM_API_KEY`.
+
+### Strict providers: compatibility settings, raw console and mock provider
+
+For deployments where the model endpoint cannot be reached during development,
+everything needed to diagnose and correct a provider mismatch is in the browser
+on **Configuration**, with no server or CLI access:
+
+- **Provider compatibility (advanced)** adapts every request the app sends
+  (connection test, request builder, chat and research). All fields are optional
+  and the defaults change nothing. Start from an example, edit, test with the
+  unsaved values, then save.
+  - *Structured output*: `json_schema` (default), `json_object` (provider JSON
+    mode, with the schema added to the prompt) or `prompt` (no `response_format`,
+    schema in the prompt only). In the last two, JSON-expecting calls run without
+    streaming so code fences and `<think>` tags around the JSON can be removed.
+  - *Stream responses*: off requests whole replies and replays them as a stream,
+    for gateways that cannot stream (also applies to the request builder).
+  - *Max-token parameter name*: `max_tokens` or `max_completion_tokens`.
+  - *Parameters to drop*: top-level request fields removed from every chat request,
+    e.g. `temperature, top_p, reasoning_effort`. `messages` and `stream` are protected.
+  - *Extra request parameters*: a JSON object merged into every chat request after
+    the drop list (e.g. `{"chat_template_kwargs":{"enable_thinking":false}}`).
+  - *Custom request headers*: sent on model and catalog requests (e.g. `api-key`,
+    `X-Tenant`). Values are treated as credentials: stored server-side, never
+    returned to the browser (the form shows "Saved value (unchanged)") and redacted
+    from raw output. A custom `Authorization` header replaces the Bearer API key.
+- **Raw request console** sends one request exactly as written (GET or POST, a path
+  under the API base URL, any body text, even invalid JSON) using the unsaved
+  settings above, and shows the provider's unprocessed status, headers and body
+  (up to 256 KB), timings, and plain-language observations: the provider's own
+  error message, HTML login pages, redirects (reported, never followed), SSE delta
+  fields, missing `[DONE]`/`finish_reason`, thinking text in fields the app does
+  not read, and DNS/TLS/proxy failures with their error codes. Choose from sample
+  payloads (the app's own probe with your settings applied, list models, minimal and
+  basic chat, streaming, `json_schema`, `json_object`, prompt-only JSON,
+  `max_completion_tokens`, reasoning effort, tool call, image input, vLLM/SGLang
+  chat-template options). **Copy report** produces a redacted text report to send
+  to developers. The console may incur provider charges.
+- To reproduce **MaaS Qwen: Python chat completions example**, turn off model
+  catalog discovery, enter the MaaS base URL ending in `/v1`, and use the value of
+  `MAAS_SECRET_TOKEN` in **API key** (without `Bearer `). Leave server proxy use
+  off for `trust_env=False`. Use TLS verification with the internal CA in
+  production; turning verification off matches the development script. Select the
+  sample in the raw console, edit the JSON, then **Send raw request**. It posts the
+  two consecutive user messages with `reasoning_effort: "high"` and no extra body fields.
+- To configure deployment defaults rather than save a database override, use **Copy
+  environment lines** to get the equivalent variables:
+  `LLM_STRUCTURED_OUTPUT` (`json_schema|json_object|prompt`), `LLM_STREAMING`
+  (`true|false`), `LLM_MAX_TOKENS_PARAM`, `LLM_DROP_PARAMS` (comma-separated),
+  `LLM_EXTRA_BODY` (JSON object) and `LLM_REQUEST_HEADERS` (JSON object of name to
+  value; keep it in the deployment's secret store).
+
+To exercise these paths without a real model, run the bundled mock provider:
+
+```bash
+npm run mock:llm -- --port 4010 --key sk-mock   # --catalog missing|invalid|html to break /models
+```
+
+then set the API base URL to `http://127.0.0.1:4010/v1` and choose a `mock/*` model.
+Each model ID is a failure scenario (`mock/no-json-schema`, `mock/no-response-format`,
+`mock/strict-params`, `mock/needs-header`, `mock/needs-extra-body`, `mock/no-streaming`,
+`mock/fenced-json`, `mock/thinking-tags`, `mock/null-content`, `mock/refusal`,
+`mock/truncated`, `mock/invalid-json`, `mock/html-page`, `mock/rate-limit`,
+`mock/unavailable-once`, `mock/slow`, `mock/redirect`, `mock/truncated-stream`,
+`mock/reasoning-alias`; `mock/ok` is fully compatible) and the startup output
+describes each. The same server (`scripts/mock-llm-server.ts`) backs the automated
+tests, so a provider quirk found in production can be added as a scenario and kept
+as a regression test.
 
 Open **Configuration** (`/config`) from the desktop or mobile navigation to save
 and test an OpenAI-compatible model API and a direct PostgreSQL connection
@@ -924,6 +993,7 @@ npm test           # engine tests (vitest)
 npm run lint
 npm run typecheck
 npm run build
+npm run mock:llm   # mock OpenAI-compatible provider with failure scenarios
 ```
 
 Built with Next.js 16 (App Router, Cache Components), React 19, Tailwind CSS v4, Recharts and lucide-react.

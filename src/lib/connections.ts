@@ -25,8 +25,41 @@ export function outputTokenLimit(settings: { outputTokens?: OutputTokenLimits },
   const value = settings.outputTokens?.[step];
   return isOutputTokenLimit(value) ? value : DEFAULT_OUTPUT_TOKENS[step];
 }
-export type ApiEndpointSettings = { baseUrl: string; apiKey?: string; verifySsl?: boolean; caCertificate?: string; trustEnv?: boolean };
-export type ApiSettings = ApiEndpointSettings & { model: string; useModelCatalog?: boolean; reasoningEffort?: ReasoningEffort; outputTokens?: OutputTokenLimits };
+/**
+ * How research calls request JSON. json_schema sends the schema natively; json_object and prompt put the
+ * schema in the prompt for providers that reject or ignore json_schema (prompt sends no response_format at all).
+ */
+export const STRUCTURED_OUTPUT_MODES = ["json_schema", "json_object", "prompt"] as const;
+export type StructuredOutputMode = typeof STRUCTURED_OUTPUT_MODES[number];
+export function isStructuredOutputMode(value: unknown): value is StructuredOutputMode {
+  return typeof value === "string" && STRUCTURED_OUTPUT_MODES.some((mode) => mode === value);
+}
+export const MAX_TOKENS_PARAMS = ["max_tokens", "max_completion_tokens"] as const;
+export type MaxTokensParam = typeof MAX_TOKENS_PARAMS[number];
+export function isMaxTokensParam(value: unknown): value is MaxTokensParam {
+  return typeof value === "string" && MAX_TOKENS_PARAMS.some((param) => param === value);
+}
+/**
+ * Extra request headers. A null value means "keep the saved value for this header" so saved header values
+ * (which are often credentials) never need to be sent back to the browser.
+ */
+export type RequestHeaders = Record<string, string | null>;
+export type ProviderOverrides = {
+  structuredOutput?: StructuredOutputMode;
+  /** false simulates streaming from a single non-streaming response. */
+  streaming?: boolean;
+  maxTokensParam?: MaxTokensParam;
+  /** Top-level request body keys removed from every chat request. */
+  dropParams?: string[];
+  /** Top-level request body keys merged into every chat request, after dropParams. */
+  extraBody?: Record<string, unknown>;
+};
+export type ApiEndpointSettings = {
+  baseUrl: string; apiKey?: string; verifySsl?: boolean; caCertificate?: string; trustEnv?: boolean; requestHeaders?: RequestHeaders;
+};
+export type ApiSettings = ApiEndpointSettings & ProviderOverrides & {
+  model: string; useModelCatalog?: boolean; reasoningEffort?: ReasoningEffort; outputTokens?: OutputTokenLimits;
+};
 export type DatabaseSettings = {
   host: string;
   port: number;
@@ -38,7 +71,7 @@ export type DatabaseSettings = {
 };
 export type Connections = { api: ApiSettings; database: DatabaseSettings };
 export type PublicConnections = {
-  api: Omit<ApiSettings, "apiKey"> & { hasApiKey: boolean; environmentApiKeyAvailable?: boolean };
+  api: Omit<ApiSettings, "apiKey" | "requestHeaders"> & { hasApiKey: boolean; headerNames?: string[]; environmentApiKeyAvailable?: boolean };
   database: Omit<DatabaseSettings, "password"> & { hasPassword: boolean };
 };
 export type ConnectionTestResult = { ok: true; message: string; feedback: string; durationMs: number };

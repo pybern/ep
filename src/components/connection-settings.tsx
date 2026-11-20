@@ -4,6 +4,8 @@ import { useEffect, useId, useState, type FormEvent, type ReactNode } from "reac
 import { AdminTokenGenerator } from "./admin-token-generator";
 import { ModelChat } from "./model-chat";
 import { ModelRequestBuilder } from "./model-request-builder";
+import { ProviderCompatibility } from "./provider-compatibility";
+import { RawRequestConsole } from "./raw-request-console";
 import { DatabaseInitializer } from "./database-initializer";
 import { sendModelChat } from "@/lib/model-chat-stream";
 import {
@@ -22,6 +24,12 @@ const OUTPUT_TOKEN_LABELS: Record<OutputTokenStep, { label: string; hint: string
   chart: { label: "Chart choice", hint: "Decides whether SQL results get a chart, after the answer." },
   explanation: { label: "Explanation", hint: "Explain these results, on request." },
 };
+// The server returns only header names; a null value keeps the saved value when settings are sent back.
+function apiFromPublic(api: PublicConnections["api"]): ApiSettings {
+  const { hasApiKey, environmentApiKeyAvailable, headerNames, ...settings } = api;
+  void hasApiKey; void environmentApiKeyAvailable;
+  return { ...settings, ...(headerNames?.length ? { requestHeaders: Object.fromEntries(headerNames.map((name) => [name, null])) } : {}) };
+}
 const buttonClass = "min-h-10 border border-slate-600 px-4 text-sm text-slate-200 transition hover:border-sky-400 hover:text-white disabled:cursor-wait disabled:opacity-50";
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
@@ -85,6 +93,8 @@ export function ConnectionSettings() {
   const [hasPassword, setHasPassword] = useState(false);
   const [notices, setNotices] = useState<Partial<Record<Kind, Notice>>>({});
   const [dirty, setDirty] = useState({ api: false, database: false });
+  const [compatibilityError, setCompatibilityError] = useState("");
+  const [compatibilityRevision, setCompatibilityRevision] = useState(0);
   const [models, setModels] = useState<string[]>([]);
   const [reasoningEfforts, setReasoningEfforts] = useState<ModelCatalog["reasoningEfforts"]>({});
   const manual = api.useModelCatalog === false;
@@ -107,7 +117,7 @@ export function ConnectionSettings() {
       setModelError("");
       try {
         const result = await request<ModelCatalog>(token, "/api/config/models", "POST", {
-          settings: { baseUrl: api.baseUrl, apiKey: api.apiKey, verifySsl: api.verifySsl, caCertificate: api.caCertificate, trustEnv: api.trustEnv },
+          settings: { baseUrl: api.baseUrl, apiKey: api.apiKey, verifySsl: api.verifySsl, caCertificate: api.caCertificate, trustEnv: api.trustEnv, requestHeaders: api.requestHeaders },
         }, controller.signal);
         if (!controller.signal.aborted) {
           setModels(result.models);
@@ -122,7 +132,7 @@ export function ConnectionSettings() {
       }
     }, 350);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [unlocked, token, api.baseUrl, api.apiKey, api.verifySsl, api.caCertificate, api.trustEnv, manual, modelRefresh]);
+  }, [unlocked, token, api.baseUrl, api.apiKey, api.verifySsl, api.caCertificate, api.trustEnv, api.requestHeaders, manual, modelRefresh]);
 
   function updateApi(change: Partial<ApiSettings>) {
     setApi((current) => ({
@@ -132,7 +142,7 @@ export function ConnectionSettings() {
     }));
     setNotices((current) => ({ ...current, api: undefined }));
     setDirty((current) => ({ ...current, api: true }));
-    if ("baseUrl" in change || "apiKey" in change || "verifySsl" in change || "caCertificate" in change || "trustEnv" in change || "useModelCatalog" in change) {
+    if ("baseUrl" in change || "apiKey" in change || "verifySsl" in change || "caCertificate" in change || "trustEnv" in change || "requestHeaders" in change || "useModelCatalog" in change) {
       setModelsLoading(false);
       setModels([]);
       setReasoningEfforts({});
@@ -151,8 +161,10 @@ export function ConnectionSettings() {
     setUnlockError("");
     try {
       const saved = await request<PublicConnections>(token, "/api/config", "GET");
-      const { hasApiKey, environmentApiKeyAvailable, ...apiSettings } = saved.api;
-      setApi(apiSettings);
+      const { hasApiKey, environmentApiKeyAvailable } = saved.api;
+      setApi(apiFromPublic(saved.api));
+      setCompatibilityError("");
+      setCompatibilityRevision((current) => current + 1);
       setSavedApi({ baseUrl: saved.api.baseUrl, model: saved.api.model });
       const { hasPassword: storedPassword, ...db } = saved.database;
       setDatabase({ ...db, password: undefined });
@@ -179,10 +191,11 @@ export function ConnectionSettings() {
       } else {
         const result = await request<PublicConnections>(token, "/api/config", "PUT", body);
         if (kind === "api") {
-          const { hasApiKey, environmentApiKeyAvailable, ...apiSettings } = result.api;
+          const { hasApiKey, environmentApiKeyAvailable } = result.api;
           setHasKey(hasApiKey);
           setEnvironmentKeyAvailable(environmentApiKeyAvailable ?? false);
-          setApi(apiSettings);
+          setApi(apiFromPublic(result.api));
+          setCompatibilityRevision((current) => current + 1);
           setSavedApi({ baseUrl: result.api.baseUrl, model: result.api.model });
           setChatRevision((current) => current + 1);
         } else {
@@ -248,10 +261,10 @@ export function ConnectionSettings() {
   function buttons(kind: Kind) {
     return (
       <div className="mt-6 flex flex-wrap items-center gap-3">
-        <button type="button" className={buttonClass} onClick={() => action(kind, true)}>
+        <button type="button" className={buttonClass} disabled={kind === "api" && !!compatibilityError} onClick={() => action(kind, true)}>
           {busy === `${kind}-test` ? "Waiting for feedback..." : "Test connection"}
         </button>
-        <button type="submit" className={`${buttonClass} border-sky-500 text-sky-300`}>
+        <button type="submit" className={`${buttonClass} border-sky-500 text-sky-300`} disabled={kind === "api" && !!compatibilityError}>
           {busy === `${kind}-save` ? "Saving..." : "Save settings"}
         </button>
         <span className="meta text-slate-500">{dirty[kind] ? "Unsaved changes" : "Current values"}</span>
@@ -383,6 +396,7 @@ export function ConnectionSettings() {
                 <textarea aria-label="API CA certificate" className={`${inputClass} font-mono text-xs`} rows={4} value={api.caCertificate ?? ""} onChange={(event) => updateApi({ caCertificate: event.target.value })} placeholder="-----BEGIN CERTIFICATE-----" />
               </Field>
             </div>}
+            <ProviderCompatibility key={`compatibility-${compatibilityRevision}`} api={api} onChange={updateApi} onError={setCompatibilityError} />
           </div>
           <p className="mt-5 text-xs text-slate-500">The test may incur a small provider charge. Uses POST /chat/completions with a 15-second timeout.</p>
           {buttons("api")}
@@ -391,6 +405,8 @@ export function ConnectionSettings() {
       </form>
 
       <ModelRequestBuilder token={token} settings={api} disabled={!!busy} />
+
+      <RawRequestConsole token={token} settings={api} disabled={!!busy} />
 
       <ModelChat
         key={`chat-${chatRevision}`}
