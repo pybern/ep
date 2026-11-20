@@ -1287,3 +1287,28 @@ describe("stock search resolution", () => {
     expect(resolveStockSearch("Tencent", [stock("00700", "TENCENT")], "HKD", true)).toEqual({ code: "00700" });
   });
 });
+
+describe("stock search resolution", () => {
+  const stock = (stock_code: string, stock_name: string, trading_currency = "HKD") => ({ stock_code, stock_name, trading_currency });
+  it("prefers an exact name over longer names that contain it", () => {
+    const rows = [stock("02318", "PING AN"), stock("03070", "PING AN HKDIV"), stock("82318", "PING AN-R", "CNY")];
+    expect(resolveStockSearch("Ping An", rows, "HKD", false)).toEqual({ code: "02318" });
+    expect(resolveStockSearch("ping  an", rows, "CNY", false)).toEqual({ code: "82318" });
+  });
+  it("ignores listing suffixes when comparing names", () => {
+    expect(resolveStockSearch("BABA", [stock("09988", "BABA-W"), stock("09999", "BABA HEALTH")], "HKD", false)).toEqual({ code: "09988" });
+  });
+  it("prefers an exact stock code over names containing the digits", () => {
+    expect(resolveStockSearch("700", [stock("00700", "TENCENT"), stock("01700", "FUND 700")], "HKD", false)).toEqual({ code: "00700" });
+  });
+  it("returns candidates when names are genuinely ambiguous or missing", () => {
+    expect(resolveStockSearch("BYD", [stock("00285", "BYD ELECTRONIC"), stock("01211", "BYD COMPANY")], "HKD", false)).toEqual({
+      candidates: [{ code: "00285", name: "BYD ELECTRONIC" }, { code: "01211", name: "BYD COMPANY" }],
+    });
+    expect(resolveStockSearch("Alibaba", [], "HKD", false)).toEqual({ candidates: [] });
+  });
+  it("does not trust a single partial match from a truncated lookup, but accepts an exact one", () => {
+    expect(resolveStockSearch("Tencent", [stock("00700", "TENCENT HOLDINGS")], "HKD", true)).toEqual({ candidates: [{ code: "00700", name: "TENCENT HOLDINGS" }] });
+    expect(resolveStockSearch("Tencent", [stock("00700", "TENCENT")], "HKD", true)).toEqual({ code: "00700" });
+  });
+});
