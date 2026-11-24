@@ -4,6 +4,10 @@ Ask a question in plain English and get back a visual answer: a headline, KPI ca
 
 Five curated analysis use cases use a deterministic engine and real statistics, without LLM calls. **HKEX Short-Selling Research** and **HK Equities Analyst** use the database research agent (AI SDK) with your saved model and PostgreSQL connections.
 
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md). In short: `npm install`, make a small focused change, then run `npm test`, `npm run lint`, `npm run typecheck` and `npm run build` before opening a PR.
+
 ### Export and query preview
 
 Research workspaces fill the available viewport height. The conversation scrolls
