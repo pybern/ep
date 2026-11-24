@@ -80,4 +80,4 @@ These tests use a local mock provider and a mocked `pg` client, so no real model
 
 ## Documentation
 
-`README.md` is the user-facing source of truth. Sections to keep in sync: *HKEX database research agent*, *Table catalog and agent SQL*, *Factual insight cards*, *Charts for SQL results*, *Inline charts in the live HKEX use case*, and the limits paragraph (output-token limits table and deadlines). Update them in the same change as the code.
+`TECHNICAL_SPEC.md` is the source of truth for agent behaviour; `README.md` is the short product overview (update its *Research workspaces* section only when a user-visible capability changes). Sections of `TECHNICAL_SPEC.md` to keep in sync: *HKEX database research agent*, *Table catalog and agent SQL*, *Factual insight cards*, *Charts for SQL results*, *Inline charts in the live HKEX use case*, and the limits paragraph (output-token limits table and deadlines). Update them in the same change as the code.
